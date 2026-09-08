@@ -14,7 +14,8 @@ pnpm starboard-api:dev
 
 Copy `apps/starboard-api/.env.example` to `apps/starboard-api/.env` when you
 want OAuth, embeddings, or the optional classifier. Alchemy starts a local
-Worker at `http://localhost:1337` and provisions a local D1 binding. Useful
+Worker at `http://localhost:1337`, force-reconciles local D1 migrations, and
+provisions the binding. Useful
 checks:
 
 ```bash
