@@ -1,0 +1,15 @@
+{
+	"compilerOptions": {
+		"target": "ES2022",
+		"lib": ["ES2022", "WebWorker"],
+		"module": "ESNext",
+		"moduleResolution": "Bundler",
+		"strict": true,
+		"skipLibCheck": true,
+		"noEmit": true,
+		"isolatedModules": true,
+		"forceConsistentCasingInFileNames": true,
+		"types": ["@cloudflare/workers-types"]
+	},
+	"include": ["src", "alchemy.run.ts"]
+}

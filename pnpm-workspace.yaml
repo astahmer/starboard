@@ -1,0 +1,11 @@
+allowBuilds:
+  core-js-pure: true
+  esbuild: true
+  msgpackr-extract: true
+  workerd: true
+
+minimumReleaseAgeExclude:
+  - '@cloudflare/workers-types@5.20260908.1'
+
+packages:
+  - 'apps/*'

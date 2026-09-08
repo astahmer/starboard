@@ -1,0 +1,23 @@
+{
+	"name": "starboard-workspace",
+	"private": true,
+	"version": "0.1.0",
+	"type": "module",
+	"packageManager": "pnpm@12.1.0",
+	"engines": {
+		"node": ">=24"
+	},
+	"scripts": {
+		"dev": "node scripts/starboard-dev.mjs",
+		"build": "pnpm --filter starboard build",
+		"test": "pnpm --filter starboard test",
+		"ui": "pnpm --filter starboard dev",
+		"api:dev": "pnpm --filter starboard-api dev",
+		"api:typecheck": "pnpm --filter starboard-api typecheck",
+		"api:plan": "pnpm --filter starboard-api plan",
+		"api:deploy": "pnpm --filter starboard-api deploy",
+		"starboard:dev": "node scripts/starboard-dev.mjs",
+		"starboard:build": "pnpm --filter starboard build",
+		"starboard:test": "pnpm --filter starboard test"
+	}
+}
