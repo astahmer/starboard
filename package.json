@@ -18,6 +18,9 @@
 		"api:deploy": "pnpm --filter starboard-api deploy",
 		"starboard:dev": "node scripts/starboard-dev.mjs",
 		"starboard:build": "pnpm --filter starboard build",
-		"starboard:test": "pnpm --filter starboard test"
+		"starboard:test": "pnpm --filter starboard test",
+		"starboard-api:dev": "pnpm --filter starboard-api dev",
+		"starboard-api:plan": "pnpm --filter starboard-api plan",
+		"starboard-api:deploy": "pnpm --filter starboard-api deploy"
 	}
 }
