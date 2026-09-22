@@ -11,5 +11,5 @@
 		"forceConsistentCasingInFileNames": true,
 		"types": ["@cloudflare/workers-types"]
 	},
-	"include": ["src", "alchemy.run.ts"]
+	"include": ["src", "alchemy.run.ts", "site-stack.ts"]
 }

@@ -16,6 +16,8 @@
 		"api:typecheck": "pnpm --filter starboard-api typecheck",
 		"api:plan": "pnpm --filter starboard-api plan",
 		"api:deploy": "pnpm --filter starboard-api deploy",
+		"site:plan": "pnpm --filter starboard-api site:plan",
+		"site:deploy": "pnpm --filter starboard-api site:deploy",
 		"starboard:dev": "node scripts/starboard-dev.mjs",
 		"starboard:build": "pnpm --filter starboard build",
 		"starboard:test": "pnpm --filter starboard test",

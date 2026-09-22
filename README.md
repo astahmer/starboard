@@ -40,6 +40,19 @@ integration.
 
 ## Deploy
 
+Deploy the browser-local UI demo separately:
+
+```bash
+pnpm site:plan
+pnpm site:deploy
+```
+
+This publishes the Vite UI as a static Cloudflare site. Its sample workspace
+and edits stay in each visitor's browser; the API and shared database are not
+included in this demo deployment.
+
+Deploy the API and D1 database separately:
+
 ```bash
 pnpm api:plan
 pnpm api:deploy

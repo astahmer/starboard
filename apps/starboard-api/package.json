@@ -7,6 +7,8 @@
 		"dev": "alchemy dev --force",
 		"plan": "alchemy plan",
 		"deploy": "alchemy deploy",
+		"site:plan": "alchemy plan --stage production site-stack.ts",
+		"site:deploy": "alchemy deploy --stage production --yes site-stack.ts",
 		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
