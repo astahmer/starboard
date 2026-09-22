@@ -95,7 +95,7 @@ export const githubAdapter: RemoteProviderAdapter = {
 		const page = Math.max(1, Number(cursor || "1"));
 		const response = await fetch(`${apiBase}/user/starred?sort=created&direction=desc&per_page=100&page=${page}`, {
 			headers: {
-				Accept: "application/vnd.github+json, application/vnd.github.star+json",
+			Accept: "application/vnd.github.star+json",
 				Authorization: `Bearer ${accessToken}`,
 				"X-GitHub-Api-Version": "2026-03-10",
 			},

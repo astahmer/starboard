@@ -43,42 +43,44 @@ function pluginFromRow(row: PluginRow): PluginManifest {
 	return { ...parseJson<Omit<PluginManifest, "id" | "name" | "version" | "description" | "enabled">>(row.manifest_json, { permissions: [], triggers: [], actions: [] }), id: row.id, name: row.name, version: row.version, description: row.description, enabled: row.enabled === 1 };
 }
 
-export async function listAutomations(env: WorkerEnv): Promise<Automation[]> {
-	const result = await env.DB.prepare("SELECT * FROM automations ORDER BY created_at ASC").all<AutomationRow>();
+export async function listAutomations(env: WorkerEnv, accountId: string): Promise<Automation[]> {
+	const result = await env.DB.prepare("SELECT * FROM automations WHERE account_id = ?1 ORDER BY created_at ASC").bind(accountId).all<AutomationRow>();
 	return result.results.map(automationFromRow);
 }
 
-export async function upsertAutomation(env: WorkerEnv, automation: Automation): Promise<Automation> {
+export async function upsertAutomation(env: WorkerEnv, accountId: string, automation: Automation): Promise<Automation> {
 	await env.DB.prepare(
-		`INSERT INTO automations (id, name, description, trigger, action, config_json, enabled, created_at, updated_at)
-		 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-		 ON CONFLICT(id) DO UPDATE SET name = excluded.name, description = excluded.description, trigger = excluded.trigger, action = excluded.action, config_json = excluded.config_json, enabled = excluded.enabled, updated_at = excluded.updated_at`,
-	).bind(automation.id, automation.name, automation.description, automation.trigger, automation.action, JSON.stringify(automation.config), automation.enabled ? 1 : 0, automation.createdAt, automation.updatedAt).run();
+		`INSERT INTO automations (id, account_id, name, description, trigger, action, config_json, enabled, created_at, updated_at)
+		 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+		 ON CONFLICT(id) DO UPDATE SET name = excluded.name, description = excluded.description, trigger = excluded.trigger, action = excluded.action, config_json = excluded.config_json, enabled = excluded.enabled, updated_at = excluded.updated_at
+		 WHERE automations.account_id = excluded.account_id`,
+	).bind(automation.id, accountId, automation.name, automation.description, automation.trigger, automation.action, JSON.stringify(automation.config), automation.enabled ? 1 : 0, automation.createdAt, automation.updatedAt).run();
 	return automation;
 }
 
-export async function deleteAutomation(env: WorkerEnv, id: string): Promise<void> {
-	await env.DB.prepare("DELETE FROM automations WHERE id = ?1").bind(id).run();
+export async function deleteAutomation(env: WorkerEnv, accountId: string, id: string): Promise<void> {
+	await env.DB.prepare("DELETE FROM automations WHERE account_id = ?1 AND id = ?2").bind(accountId, id).run();
 }
 
-export async function listPlugins(env: WorkerEnv): Promise<PluginManifest[]> {
-	const result = await env.DB.prepare("SELECT * FROM plugins ORDER BY name ASC").all<PluginRow>();
+export async function listPlugins(env: WorkerEnv, accountId: string): Promise<PluginManifest[]> {
+	const result = await env.DB.prepare("SELECT * FROM plugins WHERE account_id = ?1 ORDER BY name ASC").bind(accountId).all<PluginRow>();
 	return result.results.map(pluginFromRow);
 }
 
-export async function upsertPlugin(env: WorkerEnv, plugin: PluginManifest): Promise<PluginManifest> {
+export async function upsertPlugin(env: WorkerEnv, accountId: string, plugin: PluginManifest): Promise<PluginManifest> {
 	const { id, name, version, description, enabled, ...manifest } = plugin;
 	const now = new Date().toISOString();
 	await env.DB.prepare(
-		`INSERT INTO plugins (id, name, version, description, manifest_json, enabled, created_at, updated_at)
-		 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-		 ON CONFLICT(id) DO UPDATE SET name = excluded.name, version = excluded.version, description = excluded.description, manifest_json = excluded.manifest_json, enabled = excluded.enabled, updated_at = excluded.updated_at`,
-	).bind(id, name, version, description, JSON.stringify(manifest), enabled ? 1 : 0, now, now).run();
+		`INSERT INTO plugins (id, account_id, name, version, description, manifest_json, enabled, created_at, updated_at)
+		 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+		 ON CONFLICT(id) DO UPDATE SET name = excluded.name, version = excluded.version, description = excluded.description, manifest_json = excluded.manifest_json, enabled = excluded.enabled, updated_at = excluded.updated_at
+		 WHERE plugins.account_id = excluded.account_id`,
+	).bind(id, accountId, name, version, description, JSON.stringify(manifest), enabled ? 1 : 0, now, now).run();
 	return plugin;
 }
 
-async function recordRun(env: WorkerEnv, automationId: string, trigger: AutomationTrigger, entryId: string | undefined, status: "completed" | "failed", message: string): Promise<void> {
-	await env.DB.prepare("INSERT INTO automation_runs (id, automation_id, trigger, entry_id, status, message, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)").bind(`${automationId}:${Date.now()}:${crypto.randomUUID()}`, automationId, trigger, entryId ?? null, status, message, new Date().toISOString()).run();
+async function recordRun(env: WorkerEnv, accountId: string, automationId: string, trigger: AutomationTrigger, entryId: string | undefined, status: "completed" | "failed", message: string): Promise<void> {
+	await env.DB.prepare("INSERT INTO automation_runs (id, account_id, automation_id, trigger, entry_id, status, message, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)").bind(`${automationId}:${Date.now()}:${crypto.randomUUID()}`, accountId, automationId, trigger, entryId ?? null, status, message, new Date().toISOString()).run();
 }
 
 function configString(automation: Automation, key: string): string | undefined {
@@ -86,25 +88,25 @@ function configString(automation: Automation, key: string): string | undefined {
 	return typeof value === "string" ? value.trim() : undefined;
 }
 
-export async function runAutomations(env: WorkerEnv, trigger: AutomationTrigger, entry?: Entry): Promise<void> {
-	const automations = (await listAutomations(env)).filter((automation) => automation.enabled && automation.trigger === trigger);
+export async function runAutomations(env: WorkerEnv, accountId: string, trigger: AutomationTrigger, entry?: Entry): Promise<void> {
+	const automations = (await listAutomations(env, accountId)).filter((automation) => automation.enabled && automation.trigger === trigger);
 	let currentEntry = entry;
 	for (const automation of automations) {
 		try {
 			if (automation.action === "tag" && currentEntry) {
 				const tag = configString(automation, "tag");
 				if (!tag) throw new Error("Tag action requires config.tag");
-				const updated = await updateEntry(env.DB, currentEntry.id, { tags: Array.from(new Set([...currentEntry.tags, tag.toLocaleLowerCase()])) });
+				const updated = await updateEntry(env.DB, accountId, currentEntry.id, { tags: Array.from(new Set([...currentEntry.tags, tag.toLocaleLowerCase()])) });
 				if (updated) currentEntry = updated;
-				await recordRun(env, automation.id, trigger, currentEntry.id, "completed", `Added tag ${tag}`);
+				await recordRun(env, accountId, automation.id, trigger, currentEntry.id, "completed", `Added tag ${tag}`);
 				continue;
 			}
 			if (automation.action === "classify" && currentEntry) {
 				const classification = await classifyEntry(env, currentEntry);
 				if (!classification) throw new Error("LLM classifier is not configured or returned no topics");
-				const updated = await updateEntry(env.DB, currentEntry.id, { classification });
+				const updated = await updateEntry(env.DB, accountId, currentEntry.id, { classification });
 				if (updated) currentEntry = updated;
-				await recordRun(env, automation.id, trigger, currentEntry.id, "completed", `Suggested ${classification.topics.join(", ")}`);
+				await recordRun(env, accountId, automation.id, trigger, currentEntry.id, "completed", `Suggested ${classification.topics.join(", ")}`);
 				continue;
 			}
 			if (automation.action === "webhook") {
@@ -114,12 +116,12 @@ export async function runAutomations(env: WorkerEnv, trigger: AutomationTrigger,
 				const signature = env.AUTOMATION_SIGNING_SECRET ? await signPayload(body, env.AUTOMATION_SIGNING_SECRET) : undefined;
 				const response = await fetch(target, { method: "POST", headers: { "content-type": "application/json", ...(signature ? { "x-starboard-signature": `sha256=${signature}` } : {}) }, body });
 				if (!response.ok) throw new Error(`Webhook returned HTTP ${response.status}`);
-				await recordRun(env, automation.id, trigger, currentEntry?.id, "completed", "Webhook delivered");
+				await recordRun(env, accountId, automation.id, trigger, currentEntry?.id, "completed", "Webhook delivered");
 				continue;
 			}
-			await recordRun(env, automation.id, trigger, currentEntry?.id, "failed", "Unsupported automation action");
+			await recordRun(env, accountId, automation.id, trigger, currentEntry?.id, "failed", "Unsupported automation action");
 		} catch (error) {
-			await recordRun(env, automation.id, trigger, currentEntry?.id, "failed", error instanceof Error ? error.message : "Automation failed");
+			await recordRun(env, accountId, automation.id, trigger, currentEntry?.id, "failed", error instanceof Error ? error.message : "Automation failed");
 		}
 	}
 }

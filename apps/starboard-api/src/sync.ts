@@ -42,18 +42,19 @@ export class SyncServiceError extends Error {
 
 export async function syncProvider(
 	env: WorkerEnv,
+	accountId: string,
 	providerId: string,
 	accessToken?: string,
 	maxPages = 5,
 	requestedCursor?: string,
 ): Promise<SyncResponse> {
-	const provider = await getProvider(env.DB, providerId);
+	const provider = await getProvider(env.DB, accountId, providerId);
 	if (!provider) throw new SyncServiceError("Provider not found", 404);
 	if (!provider.connected) throw new SyncServiceError("Provider is disconnected", 409);
 	const adapter = getRemoteProviderAdapter(provider.kind);
 	if (!adapter) throw new SyncServiceError(`No remote adapter registered for ${provider.kind}`, 422);
 
-	const checkpoint = requestedCursor ? { next: requestedCursor, complete: false, seenExternalIds: [] } : parseCursor((await getSyncCheckpoint(env.DB, providerId))?.cursor);
+	const checkpoint = requestedCursor ? { next: requestedCursor, complete: false, seenExternalIds: [] } : parseCursor((await getSyncCheckpoint(env.DB, accountId, providerId))?.cursor);
 	let cursor = checkpoint.complete ? undefined : checkpoint.next;
 	let hasMore = false;
 	let pages = 0;
@@ -70,7 +71,7 @@ export async function syncProvider(
 			const embedding = await embedText(env, [entry.title, entry.summary, entry.author, ...entry.tags, ...Object.values(entry.fields ?? {}).map((value) => typeof value === "string" ? value : JSON.stringify(value))].join(" "));
 			return embedding ? { ...entry, embedding } : entry;
 		}));
-		const report = await upsertEntries(env.DB, indexedEntries);
+		const report = await upsertEntries(env.DB, accountId, indexedEntries);
 		added += report.added;
 		updated += report.updated;
 		addedEntries.push(...report.addedEntries);
@@ -85,10 +86,10 @@ export async function syncProvider(
 
 	const completedAt = new Date().toISOString();
 	const complete = !hasMore;
-	const removed = complete && !requestedCursor ? await removeEntriesNotSeen(env.DB, providerId, seenExternalIds) : 0;
-	await recordSyncCheckpoint(env.DB, providerId, serializeCursor(cursor, complete, complete ? new Set() : seenExternalIds));
-	for (const entry of addedEntries.slice(0, 50)) await runAutomations(env, "entry.created", entry);
-	await runAutomations(env, "sync.completed");
+	const removed = complete && !requestedCursor ? await removeEntriesNotSeen(env.DB, accountId, providerId, seenExternalIds) : 0;
+	await recordSyncCheckpoint(env.DB, accountId, providerId, serializeCursor(cursor, complete, complete ? new Set() : seenExternalIds));
+	for (const entry of addedEntries.slice(0, 50)) await runAutomations(env, accountId, "entry.created", entry);
+	await runAutomations(env, accountId, "sync.completed");
 	return {
 		providerId,
 		added,
@@ -97,6 +98,6 @@ export async function syncProvider(
 		indexed,
 		completedAt,
 		status: hasMore ? "queued" : "completed",
-		message: hasMore ? `Indexed ${indexed} entries; run sync again to continue backfill.` : "Source fully synced.",
+		message: hasMore ? `Indexed ${indexed} entries; sync can continue from the saved cursor.` : "Source fully synced.",
 	};
 }

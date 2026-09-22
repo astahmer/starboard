@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
 import { z } from "zod";
-import { accountIdForRequest, connectTangledHandle, credentialForProvider, finishGithubOAuth, finishTangledOAuth, isAuthenticated, logout, startGithubOAuth, startTangledOAuth } from "./auth";
+import { connectTangledHandle, credentialForAccount, credentialForProvider, finishGithubOAuth, finishTangledOAuth, logout, sessionAccountIdForRequest, startGithubOAuth, startTangledOAuth } from "./auth";
 import { apiRoutes, type SearchRequest } from "../../starboard/src/lib/api-contract";
 import type { Automation, Collection, CollectionRule, Entry, JsonValue, PluginManifest, Provider, SearchMode } from "../../starboard/src/lib/types";
 import { getEntry, getProvider, insertCollection, listCollections, listEntries, listProviders, searchWorkspace, updateEntry, upsertProvider } from "./repository";
@@ -86,7 +86,7 @@ function textResult(value: unknown) {
 	return { content: [{ type: "text" as const, text: JSON.stringify(value) }] };
 }
 
-function createMcpServer(env: WorkerEnv, request?: Request): McpServer {
+function createMcpServer(env: WorkerEnv, accountId: string, request: Request): McpServer {
 	const server = new McpServer({ name: "Starboard", version: "0.1.0" });
 
 	server.registerTool(
@@ -102,7 +102,7 @@ function createMcpServer(env: WorkerEnv, request?: Request): McpServer {
 			},
 		},
 		async ({ query, mode, providerId, collectionId, limit }) => {
-			const entries = await searchWorkspace(env.DB, query, mode ?? "hybrid", providerId, collectionId, limit ?? 20, await embedText(env, query));
+			const entries = await searchWorkspace(env.DB, accountId, query, mode ?? "hybrid", providerId, collectionId, limit ?? 20, await embedText(env, query));
 			return textResult({ entries, count: entries.length, mode: mode ?? "hybrid" });
 		},
 	);
@@ -114,7 +114,7 @@ function createMcpServer(env: WorkerEnv, request?: Request): McpServer {
 			inputSchema: { id: z.string() },
 		},
 		async ({ id }) => {
-			const entry = await getEntry(env.DB, id);
+			const entry = await getEntry(env.DB, accountId, id);
 			return textResult(entry ?? { error: "Entry not found", id });
 		},
 	);
@@ -125,7 +125,7 @@ function createMcpServer(env: WorkerEnv, request?: Request): McpServer {
 			description: "List saved smart collections and their rules.",
 			inputSchema: {},
 		},
-		async () => textResult({ collections: await listCollections(env.DB) }),
+		async () => textResult({ collections: await listCollections(env.DB, accountId) }),
 	);
 
 	server.registerTool(
@@ -135,8 +135,8 @@ function createMcpServer(env: WorkerEnv, request?: Request): McpServer {
 			inputSchema: { providerId: z.string(), cursor: z.string().optional() },
 		},
 		async ({ providerId, cursor }) => {
-			if (!(await getProvider(env.DB, providerId))) return textResult({ error: "Provider not found", providerId });
-			const report = await syncProvider(env, providerId, request ? await credentialForProvider(env, request, providerId) : undefined, 5, cursor);
+			if (!(await getProvider(env.DB, accountId, providerId))) return textResult({ error: "Provider not found", providerId });
+			const report = await syncProvider(env, accountId, providerId, await credentialForProvider(env, request, providerId), 5, cursor);
 			return textResult({ ...report, requestedCursor: cursor });
 		},
 	);
@@ -148,12 +148,12 @@ function createMcpServer(env: WorkerEnv, request?: Request): McpServer {
 			inputSchema: { id: z.string(), tag: z.string().min(1), action: z.enum(["add", "remove"]).optional() },
 		},
 		async ({ id, tag, action }) => {
-			const entry = await getEntry(env.DB, id);
+			const entry = await getEntry(env.DB, accountId, id);
 			if (!entry) return textResult({ error: "Entry not found", id });
 			const normalizedTag = tag.trim().toLocaleLowerCase();
 			if (!normalizedTag) return textResult({ error: "Tag is required", id });
 			const tags = action === "remove" ? entry.tags.filter((item) => item !== normalizedTag) : Array.from(new Set([...entry.tags, normalizedTag]));
-			const updated = await updateEntry(env.DB, id, { tags });
+			const updated = await updateEntry(env.DB, accountId, id, { tags });
 			return textResult(updated);
 		},
 	);
@@ -174,7 +174,7 @@ function createMcpServer(env: WorkerEnv, request?: Request): McpServer {
 			if (providerId) rule.providerIds = [providerId];
 			if (tags?.length) rule.tags = tags.map((tag) => tag.trim().toLocaleLowerCase()).filter(Boolean);
 			const collection: Collection = {
-				id: `${slugify(name)}-${Date.now()}`,
+				id: `${accountId}:${slugify(name)}-${Date.now()}`,
 				name,
 				description: description ?? "A saved view created through MCP.",
 				icon: "layers",
@@ -182,14 +182,14 @@ function createMcpServer(env: WorkerEnv, request?: Request): McpServer {
 				rule,
 				builtIn: false,
 			};
-			return textResult(await insertCollection(env.DB, collection));
+			return textResult(await insertCollection(env.DB, accountId, collection));
 		},
 	);
 
 	server.registerTool(
 		"list_automations",
 		{ description: "List enabled and disabled Starboard automation rules.", inputSchema: {} },
-		async () => textResult({ automations: await listAutomations(env) }),
+		async () => textResult({ automations: await listAutomations(env, accountId) }),
 	);
 
 	server.registerTool(
@@ -205,8 +205,8 @@ function createMcpServer(env: WorkerEnv, request?: Request): McpServer {
 		},
 		async ({ name, trigger, action, config }) => {
 			const now = new Date().toISOString();
-			const automation: Automation = { id: `${slugify(name)}-${Date.now()}`, name: name.trim(), description: "Created through MCP.", trigger, action, config: (config ?? {}) as Record<string, JsonValue>, enabled: true, createdAt: now, updatedAt: now };
-			return textResult(await upsertAutomation(env, automation));
+			const automation: Automation = { id: `${accountId}:${slugify(name)}-${Date.now()}`, name: name.trim(), description: "Created through MCP.", trigger, action, config: (config ?? {}) as Record<string, JsonValue>, enabled: true, createdAt: now, updatedAt: now };
+			return textResult(await upsertAutomation(env, accountId, automation));
 		},
 	);
 
@@ -226,15 +226,15 @@ function createMcpServer(env: WorkerEnv, request?: Request): McpServer {
 			},
 		},
 		async ({ id, name, version, description, permissions, triggers, actions, entrypoint }) => {
-			const plugin: PluginManifest = { id: id.trim(), name: name.trim(), version: version.trim(), description: description?.trim() ?? "Registered through MCP.", permissions: permissions ?? [], triggers: triggers as PluginManifest["triggers"] ?? [], actions: actions as PluginManifest["actions"] ?? [], entrypoint, enabled: true };
-			return textResult(await upsertPlugin(env, plugin));
+			const plugin: PluginManifest = { id: `${accountId}:${id.trim()}`, name: name.trim(), version: version.trim(), description: description?.trim() ?? "Registered through MCP.", permissions: permissions ?? [], triggers: triggers as PluginManifest["triggers"] ?? [], actions: actions as PluginManifest["actions"] ?? [], entrypoint, enabled: true };
+			return textResult(await upsertPlugin(env, accountId, plugin));
 		},
 	);
 
 	return server;
 }
 
-async function handleApi(request: Request, env: WorkerEnv): Promise<Response> {
+async function handleApi(request: Request, env: WorkerEnv, accountId?: string): Promise<Response> {
 	const url = new URL(request.url);
 	if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: jsonHeaders(request) });
 
@@ -242,21 +242,22 @@ async function handleApi(request: Request, env: WorkerEnv): Promise<Response> {
 		return json(request, { ok: true, service: "starboard-api", database: "d1", timestamp: new Date().toISOString() });
 	}
 	if (url.pathname === apiRoutes.me && request.method === "GET") {
-		const accountId = await accountIdForRequest(env, request);
-		const account = await env.DB.prepare("SELECT id, handle, display_name AS displayName FROM accounts WHERE id = ?1 LIMIT 1").bind(accountId).first<{ id: string; handle: string; displayName: string }>();
-		return json(request, { account: account ?? { id: accountId, handle: "local", displayName: "Local workspace" }, authenticated: await isAuthenticated(env, request), providers: await listProviders(env.DB) });
+		if (!accountId) return json(request, { account: null, authenticated: false, providers: [], canConnectGithub: Boolean(env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET && env.SESSION_SECRET) });
+		const account = await env.DB.prepare("SELECT id, handle, display_name AS displayName, avatar_url AS avatarUrl FROM accounts WHERE id = ?1 LIMIT 1").bind(accountId).first<{ id: string; handle: string; displayName: string; avatarUrl: string | null }>();
+		return json(request, { account: account ? { ...account, avatarUrl: account.avatarUrl ?? undefined } : null, authenticated: Boolean(account), providers: account ? await listProviders(env.DB, accountId) : [], canConnectGithub: Boolean(env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET && env.SESSION_SECRET) });
 	}
+	if (!accountId) return failure(request, "Authentication required", 401);
 	if (url.pathname === apiRoutes.workspace && request.method === "GET") {
-		return json(request, { providers: await listProviders(env.DB), entries: await listEntries(env.DB), collections: await listCollections(env.DB), automations: await listAutomations(env), plugins: await listPlugins(env) });
+		return json(request, { providers: await listProviders(env.DB, accountId), entries: await listEntries(env.DB, accountId), collections: await listCollections(env.DB, accountId), automations: await listAutomations(env, accountId), plugins: await listPlugins(env, accountId) });
 	}
-	if (url.pathname === apiRoutes.providers && request.method === "GET") return json(request, { providers: await listProviders(env.DB) });
+	if (url.pathname === apiRoutes.providers && request.method === "GET") return json(request, { providers: await listProviders(env.DB, accountId) });
 	if (url.pathname === apiRoutes.providers && request.method === "POST") {
 		const body = await request.json() as { handle?: string; provider?: Partial<Provider> };
 		if (body.provider) {
 			if (!body.provider.id?.trim() || !body.provider.name?.trim() || !body.provider.schema?.id) return failure(request, "Provider id, name, and schema are required", 400);
 			const now = new Date().toISOString();
 			const provider: Provider = {
-				id: body.provider.id.trim(),
+				id: `${accountId}:${body.provider.id.trim()}`,
 				name: body.provider.name.trim(),
 				kind: body.provider.kind ?? "custom",
 				handle: body.provider.handle?.trim() || "local-source",
@@ -268,11 +269,11 @@ async function handleApi(request: Request, env: WorkerEnv): Promise<Response> {
 				lastSyncedAt: body.provider.lastSyncedAt,
 				settings: body.provider.settings,
 			};
-			return json(request, { provider: await upsertProvider(env.DB, provider) }, 201);
+			return json(request, { provider: await upsertProvider(env.DB, accountId, provider) }, 201);
 		}
 		if (!body.handle?.trim()) return failure(request, "Provider handle is required", 400);
 		try {
-			return json(request, { provider: await connectTangledHandle(env, request, body.handle) }, 201);
+			return json(request, { provider: await connectTangledHandle(env, accountId, body.handle) }, 201);
 		} catch (error) {
 			return failure(request, error instanceof Error ? error.message : "Could not connect provider", 400);
 		}
@@ -280,35 +281,35 @@ async function handleApi(request: Request, env: WorkerEnv): Promise<Response> {
 	const providerMatch = url.pathname.match(/^\/api\/providers\/([^/]+)$/);
 	if (providerMatch?.[1] && request.method === "PATCH") {
 		const id = decodeURIComponent(providerMatch[1]);
-		const current = await getProvider(env.DB, id);
+		const current = await getProvider(env.DB, accountId, id);
 		if (!current) return failure(request, "Provider not found", 404);
 		const body = await request.json() as { connected?: boolean };
 		if (typeof body.connected !== "boolean") return failure(request, "Provider connected state is required", 400);
 		const connectedAt = body.connected ? current.connectedAt ?? new Date().toISOString() : current.connectedAt;
-		await env.DB.prepare("UPDATE providers SET connected = ?1, connected_at = ?2 WHERE id = ?3").bind(body.connected ? 1 : 0, connectedAt ?? null, id).run();
-		if (!body.connected) await env.DB.prepare("DELETE FROM provider_credentials WHERE provider_id = ?1").bind(id).run();
+		await env.DB.prepare("UPDATE providers SET connected = ?1, connected_at = ?2 WHERE account_id = ?3 AND id = ?4").bind(body.connected ? 1 : 0, connectedAt ?? null, accountId, id).run();
+		if (!body.connected) await env.DB.prepare("DELETE FROM provider_credentials WHERE account_id = ?1 AND provider_id = ?2").bind(accountId, id).run();
 		return json(request, { provider: { ...current, connected: body.connected, connectedAt } });
 	}
 	if (providerMatch?.[1] && request.method === "DELETE") {
 		const id = decodeURIComponent(providerMatch[1]);
-		const current = await getProvider(env.DB, id);
+		const current = await getProvider(env.DB, accountId, id);
 		if (!current) return failure(request, "Provider not found", 404);
 		await env.DB.batch([
-			env.DB.prepare("DELETE FROM provider_credentials WHERE provider_id = ?1").bind(id),
-			env.DB.prepare("DELETE FROM sync_checkpoints WHERE provider_id = ?1").bind(id),
-			env.DB.prepare("DELETE FROM entries WHERE provider_id = ?1").bind(id),
-			env.DB.prepare("DELETE FROM providers WHERE id = ?1").bind(id),
+			env.DB.prepare("DELETE FROM provider_credentials WHERE account_id = ?1 AND provider_id = ?2").bind(accountId, id),
+			env.DB.prepare("DELETE FROM sync_checkpoints WHERE account_id = ?1 AND provider_id = ?2").bind(accountId, id),
+			env.DB.prepare("DELETE FROM entries WHERE account_id = ?1 AND provider_id = ?2").bind(accountId, id),
+			env.DB.prepare("DELETE FROM providers WHERE account_id = ?1 AND id = ?2").bind(accountId, id),
 		]);
 		return json(request, { id });
 	}
-	if (url.pathname === apiRoutes.collections && request.method === "GET") return json(request, { collections: await listCollections(env.DB) });
-	if (url.pathname === apiRoutes.automations && request.method === "GET") return json(request, { automations: await listAutomations(env) });
+	if (url.pathname === apiRoutes.collections && request.method === "GET") return json(request, { collections: await listCollections(env.DB, accountId) });
+	if (url.pathname === apiRoutes.automations && request.method === "GET") return json(request, { automations: await listAutomations(env, accountId) });
 	if (url.pathname === apiRoutes.automations && request.method === "POST") {
 		const body = await request.json() as Partial<import("../../starboard/src/lib/types").Automation>;
 		if (!body.name?.trim() || !isAutomationTrigger(body.trigger) || !isAutomationAction(body.action)) return failure(request, "Automation name, trigger, and action are required", 400);
 		const now = new Date().toISOString();
 		const automation: import("../../starboard/src/lib/types").Automation = {
-			id: body.id?.trim() || `${slugify(body.name)}-${Date.now()}`,
+			id: `${accountId}:${body.id?.trim() || `${slugify(body.name)}-${Date.now()}`}`,
 			name: body.name.trim(),
 			description: body.description?.trim() || "A Starboard automation.",
 			trigger: body.trigger,
@@ -318,12 +319,12 @@ async function handleApi(request: Request, env: WorkerEnv): Promise<Response> {
 			createdAt: body.createdAt ?? now,
 			updatedAt: now,
 		};
-		return json(request, { automation: await upsertAutomation(env, automation) }, 201);
+		return json(request, { automation: await upsertAutomation(env, accountId, automation) }, 201);
 	}
 	const automationMatch = url.pathname.match(/^\/api\/automations\/([^/]+)$/);
 	if (automationMatch?.[1] && request.method === "PATCH") {
 		const id = decodeURIComponent(automationMatch[1]);
-		const current = (await listAutomations(env)).find((automation) => automation.id === id);
+		const current = (await listAutomations(env, accountId)).find((automation) => automation.id === id);
 		if (!current) return failure(request, "Automation not found", 404);
 		const body = await request.json() as Partial<Automation>;
 		if (body.trigger !== undefined && !isAutomationTrigger(body.trigger)) return failure(request, "Invalid automation trigger", 400);
@@ -338,19 +339,19 @@ async function handleApi(request: Request, env: WorkerEnv): Promise<Response> {
 			enabled: typeof body.enabled === "boolean" ? body.enabled : current.enabled,
 			updatedAt: new Date().toISOString(),
 		};
-		return json(request, { automation: await upsertAutomation(env, automation) });
+		return json(request, { automation: await upsertAutomation(env, accountId, automation) });
 	}
 	if (automationMatch?.[1] && request.method === "DELETE") {
 		const id = decodeURIComponent(automationMatch[1]);
-		await deleteAutomation(env, id);
+		await deleteAutomation(env, accountId, id);
 		return json(request, { id });
 	}
-	if (url.pathname === apiRoutes.plugins && request.method === "GET") return json(request, { plugins: await listPlugins(env) });
+	if (url.pathname === apiRoutes.plugins && request.method === "GET") return json(request, { plugins: await listPlugins(env, accountId) });
 	if (url.pathname === apiRoutes.plugins && request.method === "POST") {
 		const body = await request.json() as Partial<import("../../starboard/src/lib/types").PluginManifest>;
 		if (!body.id?.trim() || !body.name?.trim() || !body.version?.trim()) return failure(request, "Plugin id, name, and version are required", 400);
 		const plugin: import("../../starboard/src/lib/types").PluginManifest = {
-			id: body.id.trim(),
+			id: `${accountId}:${body.id.trim()}`,
 			name: body.name.trim(),
 			version: body.version.trim(),
 			description: body.description?.trim() || "A Starboard plugin.",
@@ -360,11 +361,11 @@ async function handleApi(request: Request, env: WorkerEnv): Promise<Response> {
 			entrypoint: body.entrypoint,
 			enabled: body.enabled ?? true,
 		};
-		return json(request, { plugin: await upsertPlugin(env, plugin) }, 201);
+		return json(request, { plugin: await upsertPlugin(env, accountId, plugin) }, 201);
 	}
 
 	if (url.pathname === apiRoutes.entries && request.method === "GET") {
-		return json(request, { entries: await listEntries(env.DB) });
+		return json(request, { entries: await listEntries(env.DB, accountId) });
 	}
 
 	if (url.pathname === apiRoutes.search && request.method === "GET") {
@@ -376,7 +377,7 @@ async function handleApi(request: Request, env: WorkerEnv): Promise<Response> {
 			limit: limitFrom(url.searchParams.get("limit")),
 		};
 		return json(request, {
-			entries: await searchWorkspace(env.DB, params.query, params.mode ?? "hybrid", params.providerId, params.collectionId, params.limit, await embedText(env, params.query)),
+			entries: await searchWorkspace(env.DB, accountId, params.query, params.mode ?? "hybrid", params.providerId, params.collectionId, params.limit, await embedText(env, params.query)),
 			mode: params.mode ?? "hybrid",
 			local: false,
 		});
@@ -384,7 +385,7 @@ async function handleApi(request: Request, env: WorkerEnv): Promise<Response> {
 
 	const entryMatch = url.pathname.match(/^\/api\/entries\/([^/]+)$/);
 	if (entryMatch?.[1] && request.method === "GET") {
-		const entry = await getEntry(env.DB, decodeURIComponent(entryMatch[1]));
+		const entry = await getEntry(env.DB, accountId, decodeURIComponent(entryMatch[1]));
 		return entry ? json(request, { entry }) : failure(request, "Entry not found", 404);
 	}
 	if (entryMatch?.[1] && request.method === "PATCH") {
@@ -393,7 +394,7 @@ async function handleApi(request: Request, env: WorkerEnv): Promise<Response> {
 		if (typeof body.isRead === "boolean") patch.isRead = body.isRead;
 		if (typeof body.isPinned === "boolean") patch.isPinned = body.isPinned;
 		if (Array.isArray(body.tags) && body.tags.every((tag) => typeof tag === "string")) patch.tags = body.tags.map((tag) => tag.trim().toLocaleLowerCase()).filter(Boolean);
-		const entry = await updateEntry(env.DB, decodeURIComponent(entryMatch[1]), patch);
+		const entry = await updateEntry(env.DB, accountId, decodeURIComponent(entryMatch[1]), patch);
 		return entry ? json(request, { entry }) : failure(request, "Entry not found", 404);
 	}
 
@@ -401,7 +402,7 @@ async function handleApi(request: Request, env: WorkerEnv): Promise<Response> {
 		const body = await request.json() as Partial<Collection>;
 		if (!body.name?.trim()) return failure(request, "Collection name is required", 400);
 		const collection: Collection = {
-			id: body.id?.trim() || `${slugify(body.name)}-${Date.now()}`,
+			id: `${accountId}:${body.id?.trim() || `${slugify(body.name)}-${Date.now()}`}`,
 			name: body.name.trim(),
 			description: body.description?.trim() || "A saved view over your source library.",
 			icon: body.icon ?? "layers",
@@ -409,15 +410,15 @@ async function handleApi(request: Request, env: WorkerEnv): Promise<Response> {
 			rule: body.rule ?? {},
 			builtIn: false,
 		};
-		return json(request, { collection: await insertCollection(env.DB, collection) }, 201);
+		return json(request, { collection: await insertCollection(env.DB, accountId, collection) }, 201);
 	}
 
 	const syncMatch = url.pathname.match(/^\/api\/sync\/([^/]+)$/);
 	if (syncMatch?.[1] && request.method === "POST") {
 		const providerId = decodeURIComponent(syncMatch[1]);
-		if (!(await getProvider(env.DB, providerId))) return failure(request, "Provider not found", 404);
+		if (!(await getProvider(env.DB, accountId, providerId))) return failure(request, "Provider not found", 404);
 		try {
-			const report = await syncProvider(env, providerId, await credentialForProvider(env, request, providerId), 5);
+			const report = await syncProvider(env, accountId, providerId, await credentialForProvider(env, request, providerId), 5);
 			return json(request, report, report.status === "queued" ? 202 : 200);
 		} catch (error) {
 			const status = typeof error === "object" && error !== null && "status" in error && typeof error.status === "number" ? error.status : 502;
@@ -436,14 +437,18 @@ export default {
 		if (url.pathname === apiRoutes.auth.tangledStart && request.method === "GET") return withCors(await startTangledOAuth(env, request), request, env);
 		if (url.pathname === apiRoutes.auth.tangledCallback && request.method === "GET") return withCors(await finishTangledOAuth(env, request), request, env);
 		if (url.pathname === apiRoutes.auth.logout && request.method === "POST") return withCors(await logout(env, request), request, env);
-		if (env.AUTH_REQUIRED?.toLocaleLowerCase() === "true" && request.method !== "OPTIONS" && url.pathname !== apiRoutes.health && !(await isAuthenticated(env, request))) {
+		const accountId = await sessionAccountIdForRequest(env, request);
+		const publicApiPath = url.pathname === apiRoutes.health || url.pathname === apiRoutes.me;
+		if (url.pathname.startsWith("/api/") && !publicApiPath && request.method !== "OPTIONS" && !accountId) {
 			return withCors(failure(request, "Authentication required", 401), request, env);
 		}
 		if (url.pathname === "/mcp" || url.pathname.startsWith("/mcp/")) {
-			return withCors(await createMcpHandler(() => createMcpServer(env, request), { route: "/mcp" })(request, env, ctx), request, env);
+			if (!accountId) return withCors(failure(request, "Authentication required", 401), request, env);
+			return withCors(await createMcpHandler(() => createMcpServer(env, accountId, request), { route: "/mcp" })(request, env, ctx), request, env);
 		}
+		if (!url.pathname.startsWith("/api/") && env.ASSETS) return env.ASSETS.fetch(request);
 		try {
-			return withCors(await handleApi(request, env), request, env);
+			return withCors(await handleApi(request, env, accountId), request, env);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unexpected server error";
 			return withCors(failure(request, message, 500), request, env);
@@ -451,13 +456,12 @@ export default {
 	},
 	scheduled(_event: ScheduledController, env: WorkerEnv, ctx: ExecutionContext): void {
 		ctx.waitUntil((async () => {
-			const providers = await listProviders(env.DB);
-			await Promise.allSettled(providers.filter((provider) => provider.connected).map(async (provider) => {
+			const providers = await env.DB.prepare("SELECT account_id, id FROM providers WHERE connected = 1").all<{ account_id: string; id: string }>();
+			await Promise.allSettled(providers.results.map(async ({ account_id: accountId, id }) => {
 				try {
-					const request = new Request("https://starboard.local/");
-					await syncProvider(env, provider.id, await credentialForProvider(env, request, provider.id), 5);
+					await syncProvider(env, accountId, id, await credentialForAccount(env, accountId, id), 5);
 				} catch (error) {
-					console.error(`Scheduled sync failed for ${provider.id}`, error);
+					console.error(`Scheduled sync failed for ${accountId}:${id}`, error);
 				}
 			}));
 		})());

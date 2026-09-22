@@ -1,6 +1,6 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import { collectionMatches, searchEntries } from "../../starboard/src/lib/search";
-import { defaultCollections } from "../../starboard/src/lib/mock-data";
+import { defaultCollections } from "../../starboard/src/lib/workspace-defaults";
 import type { Collection, CollectionRule, Entry, Provider, SearchMode } from "../../starboard/src/lib/types";
 
 interface ProviderRow {
@@ -120,13 +120,13 @@ const collectionFromRow = (row: CollectionRow): Collection => ({
 	builtIn: row.built_in === 1,
 });
 
-export async function listProviders(db: D1Database): Promise<Provider[]> {
-	const result = await db.prepare("SELECT * FROM providers ORDER BY name ASC").all<ProviderRow>();
+export async function listProviders(db: D1Database, accountId: string): Promise<Provider[]> {
+	const result = await db.prepare("SELECT * FROM providers WHERE account_id = ?1 ORDER BY name ASC").bind(accountId).all<ProviderRow>();
 	return result.results.map(providerFromRow);
 }
 
-export async function getProvider(db: D1Database, id: string): Promise<Provider | undefined> {
-	const result = await db.prepare("SELECT * FROM providers WHERE id = ?1 LIMIT 1").bind(id).first<ProviderRow>();
+export async function getProvider(db: D1Database, accountId: string, id: string): Promise<Provider | undefined> {
+	const result = await db.prepare("SELECT * FROM providers WHERE account_id = ?1 AND id = ?2 LIMIT 1").bind(accountId, id).first<ProviderRow>();
 	return result ? providerFromRow(result) : undefined;
 }
 
@@ -136,35 +136,43 @@ export interface SyncCheckpointRecord {
 	completedAt?: string;
 }
 
-export async function getSyncCheckpoint(db: D1Database, providerId: string): Promise<SyncCheckpointRecord | undefined> {
-	const row = await db.prepare("SELECT provider_id, cursor_json, completed_at FROM sync_checkpoints WHERE provider_id = ?1 LIMIT 1").bind(providerId).first<{ provider_id: string; cursor_json: string | null; completed_at: string | null }>();
+export async function getSyncCheckpoint(db: D1Database, accountId: string, providerId: string): Promise<SyncCheckpointRecord | undefined> {
+	const row = await db.prepare("SELECT provider_id, cursor_json, completed_at FROM sync_checkpoints WHERE account_id = ?1 AND provider_id = ?2 LIMIT 1").bind(accountId, providerId).first<{ provider_id: string; cursor_json: string | null; completed_at: string | null }>();
 	if (!row) return undefined;
 	const parsed = parseJson<{ value?: string }>(row.cursor_json, {});
 	return { providerId: row.provider_id, cursor: parsed.value, completedAt: row.completed_at ?? undefined };
 }
 
-export async function listEntries(db: D1Database): Promise<Entry[]> {
-	const result = await db.prepare("SELECT * FROM entries ORDER BY starred_at DESC").all<EntryRow>();
+export async function listEntries(db: D1Database, accountId: string): Promise<Entry[]> {
+	const result = await db.prepare("SELECT * FROM entries WHERE account_id = ?1 ORDER BY starred_at DESC").bind(accountId).all<EntryRow>();
 	return result.results.map(entryFromRow);
 }
 
-export async function listCollections(db: D1Database): Promise<Collection[]> {
-	const hasDefaults = await db.prepare("SELECT id FROM collections WHERE id = 'all' LIMIT 1").first<{ id: string }>();
-	if (!hasDefaults) await db.batch(defaultCollections.map((collection) => db.prepare(
-		`INSERT OR IGNORE INTO collections (id, name, description, icon, color, rule_json, built_in)
-		 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
-	).bind(collection.id, collection.name, collection.description, collection.icon, collection.color, JSON.stringify(collection.rule), collection.builtIn ? 1 : 0)));
-	const result = await db.prepare("SELECT * FROM collections ORDER BY built_in DESC, name ASC").all<CollectionRow>();
+export async function listCollections(db: D1Database, accountId: string): Promise<Collection[]> {
+	const accountCollections = defaultCollections.map((collection) => ({
+		...collection,
+		id: `${accountId}:${collection.id}`,
+		rule: {
+			...collection.rule,
+			providerIds: collection.rule.providerIds?.map((providerId) => `${accountId}:${providerId}`),
+		},
+	}));
+	await db.batch(accountCollections.map((collection) => db.prepare(
+		`INSERT OR IGNORE INTO collections (id, account_id, name, description, icon, color, rule_json, built_in)
+		 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
+	).bind(collection.id, accountId, collection.name, collection.description, collection.icon, collection.color, JSON.stringify(collection.rule), collection.builtIn ? 1 : 0)));
+	const result = await db.prepare("SELECT * FROM collections WHERE account_id = ?1 ORDER BY built_in DESC, name ASC").bind(accountId).all<CollectionRow>();
 	return result.results.map(collectionFromRow);
 }
 
-export async function getEntry(db: D1Database, id: string): Promise<Entry | undefined> {
-	const result = await db.prepare("SELECT * FROM entries WHERE id = ?1 LIMIT 1").bind(id).first<EntryRow>();
+export async function getEntry(db: D1Database, accountId: string, id: string): Promise<Entry | undefined> {
+	const result = await db.prepare("SELECT * FROM entries WHERE account_id = ?1 AND id = ?2 LIMIT 1").bind(accountId, id).first<EntryRow>();
 	return result ? entryFromRow(result) : undefined;
 }
 
 export async function searchWorkspace(
 	db: D1Database,
+	accountId: string,
 	query: string,
 	mode: SearchMode,
 	providerId?: string,
@@ -172,7 +180,7 @@ export async function searchWorkspace(
 	limit = 50,
 	queryEmbedding?: number[],
 ): Promise<Entry[]> {
-	const [entries, collections] = await Promise.all([listEntries(db), listCollections(db)]);
+	const [entries, collections] = await Promise.all([listEntries(db, accountId), listCollections(db, accountId)]);
 	const collection = collectionId ? collections.find((item) => item.id === collectionId) : undefined;
 	const filtered = entries.filter((entry) => {
 		if (providerId && entry.providerId !== providerId) return false;
@@ -183,32 +191,33 @@ export async function searchWorkspace(
 
 export async function updateEntry(
 	db: D1Database,
+	accountId: string,
 	id: string,
 	patch: Partial<Pick<Entry, "isRead" | "isPinned" | "tags" | "classification" | "embedding">>,
 ): Promise<Entry | undefined> {
-	const current = await getEntry(db, id);
+	const current = await getEntry(db, accountId, id);
 	if (!current) return undefined;
 	const next: Entry = { ...current, ...patch, updatedAt: new Date().toISOString() };
 	await db.prepare(
 		`UPDATE entries
 		 SET tags_json = ?1, is_read = ?2, is_pinned = ?3, updated_at = ?4, embedding_json = ?5, classification_json = ?6
-		 WHERE id = ?7`,
-	).bind(JSON.stringify(next.tags), next.isRead ? 1 : 0, next.isPinned ? 1 : 0, next.updatedAt, next.embedding ? JSON.stringify(next.embedding) : null, next.classification ? JSON.stringify(next.classification) : null, id).run();
+		 WHERE account_id = ?7 AND id = ?8`,
+	).bind(JSON.stringify(next.tags), next.isRead ? 1 : 0, next.isPinned ? 1 : 0, next.updatedAt, next.embedding ? JSON.stringify(next.embedding) : null, next.classification ? JSON.stringify(next.classification) : null, accountId, id).run();
 	return next;
 }
 
-export async function insertCollection(db: D1Database, collection: Collection): Promise<Collection> {
+export async function insertCollection(db: D1Database, accountId: string, collection: Collection): Promise<Collection> {
 	await db.prepare(
-		`INSERT INTO collections (id, name, description, icon, color, rule_json, built_in)
-		 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
-	).bind(collection.id, collection.name, collection.description, collection.icon, collection.color, JSON.stringify(collection.rule), collection.builtIn ? 1 : 0).run();
+		`INSERT INTO collections (id, account_id, name, description, icon, color, rule_json, built_in)
+		 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
+	).bind(collection.id, accountId, collection.name, collection.description, collection.icon, collection.color, JSON.stringify(collection.rule), collection.builtIn ? 1 : 0).run();
 	return collection;
 }
 
-export async function upsertProvider(db: D1Database, provider: Provider): Promise<Provider> {
+export async function upsertProvider(db: D1Database, accountId: string, provider: Provider): Promise<Provider> {
 	await db.prepare(
-		`INSERT INTO providers (id, name, kind, handle, description, accent, schema_json, connected, connected_at, last_synced_at, config_json)
-		 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+		`INSERT INTO providers (id, account_id, name, kind, handle, description, accent, schema_json, connected, connected_at, last_synced_at, config_json)
+		 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
 		 ON CONFLICT(id) DO UPDATE SET
 		   name = excluded.name,
 		   kind = excluded.kind,
@@ -219,9 +228,11 @@ export async function upsertProvider(db: D1Database, provider: Provider): Promis
 		   connected = excluded.connected,
 		   connected_at = excluded.connected_at,
 		   last_synced_at = COALESCE(excluded.last_synced_at, providers.last_synced_at),
-		   config_json = excluded.config_json`,
+		   config_json = excluded.config_json
+		 WHERE providers.account_id = excluded.account_id`,
 	).bind(
 		provider.id,
+		accountId,
 		provider.name,
 		provider.kind,
 		provider.handle,
@@ -243,19 +254,25 @@ export interface UpsertReport {
 	updatedEntries: Entry[];
 }
 
-export async function upsertEntries(db: D1Database, entries: Entry[]): Promise<UpsertReport> {
+export async function upsertEntries(db: D1Database, accountId: string, entries: Entry[]): Promise<UpsertReport> {
 	if (entries.length === 0) return { added: 0, updated: 0, addedEntries: [], updatedEntries: [] };
-	const existing = await listEntries(db);
-	const existingById = new Map(existing.map((entry) => [entry.id, entry]));
+	const existingRows: EntryRow[] = [];
+	for (let start = 0; start < entries.length; start += 80) {
+		const ids = entries.slice(start, start + 80).map((entry) => entry.id);
+		const placeholders = ids.map((_, index) => `?${index + 2}`).join(", ");
+		const result = await db.prepare(`SELECT * FROM entries WHERE account_id = ?1 AND id IN (${placeholders})`).bind(accountId, ...ids).all<EntryRow>();
+		existingRows.push(...result.results);
+	}
+	const existingById = new Map(existingRows.map((row) => [row.id, entryFromRow(row)]));
 	const statements = entries.map((entry) => {
 		const previous = existingById.get(entry.id);
 		const mergedTags = Array.from(new Set([...(previous?.tags ?? []), ...entry.tags]));
 		return db.prepare(
 			`INSERT INTO entries (
-				id, provider_id, schema_id, external_id, kind, title, summary, url, author, author_handle,
+				account_id, id, provider_id, schema_id, external_id, kind, title, summary, url, author, author_handle,
 				tags_json, starred_at, updated_at, synced_at, is_read, is_pinned, language, language_color,
 				stars, forks, comments, fields_json, embedding_json, classification_json
-			) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
+			) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
 			 ON CONFLICT(id) DO UPDATE SET
 				provider_id = excluded.provider_id,
 				schema_id = excluded.schema_id,
@@ -277,8 +294,10 @@ export async function upsertEntries(db: D1Database, entries: Entry[]): Promise<U
 				comments = excluded.comments,
 				fields_json = excluded.fields_json,
 				embedding_json = excluded.embedding_json,
-				classification_json = excluded.classification_json`,
+				classification_json = excluded.classification_json
+			 WHERE entries.account_id = excluded.account_id`,
 		).bind(
+			accountId,
 			entry.id,
 			entry.providerId,
 			entry.schemaId,
@@ -311,20 +330,21 @@ export async function upsertEntries(db: D1Database, entries: Entry[]): Promise<U
 	return { added: addedEntries.length, updated: updatedEntries.length, addedEntries, updatedEntries };
 }
 
-export async function removeEntriesNotSeen(db: D1Database, providerId: string, seenExternalIds: Set<string>): Promise<number> {
-	const existing = await db.prepare("SELECT id, external_id FROM entries WHERE provider_id = ?1").bind(providerId).all<{ id: string; external_id: string | null }>();
+export async function removeEntriesNotSeen(db: D1Database, accountId: string, providerId: string, seenExternalIds: Set<string>): Promise<number> {
+	const existing = await db.prepare("SELECT id, external_id FROM entries WHERE account_id = ?1 AND provider_id = ?2").bind(accountId, providerId).all<{ id: string; external_id: string | null }>();
 	const stale = existing.results.filter((entry) => !seenExternalIds.has(entry.external_id ?? entry.id));
 	if (stale.length === 0) return 0;
-	await db.batch(stale.map((entry) => db.prepare("DELETE FROM entries WHERE id = ?1 AND provider_id = ?2").bind(entry.id, providerId)));
+	await db.batch(stale.map((entry) => db.prepare("DELETE FROM entries WHERE account_id = ?1 AND id = ?2 AND provider_id = ?3").bind(accountId, entry.id, providerId)));
 	return stale.length;
 }
 
-export async function recordSyncCheckpoint(db: D1Database, providerId: string, cursor?: string): Promise<void> {
+export async function recordSyncCheckpoint(db: D1Database, accountId: string, providerId: string, cursor?: string): Promise<void> {
 	const completedAt = new Date().toISOString();
 	await db.prepare(
-		`INSERT INTO sync_checkpoints (provider_id, cursor_json, completed_at)
-		 VALUES (?1, ?2, ?3)
-		 ON CONFLICT(provider_id) DO UPDATE SET cursor_json = excluded.cursor_json, completed_at = excluded.completed_at`,
-	).bind(providerId, cursor ? JSON.stringify({ value: cursor }) : null, completedAt).run();
-	await db.prepare("UPDATE providers SET last_synced_at = ?1 WHERE id = ?2").bind(completedAt, providerId).run();
+		`INSERT INTO sync_checkpoints (provider_id, account_id, cursor_json, completed_at)
+		 VALUES (?1, ?2, ?3, ?4)
+		 ON CONFLICT(provider_id) DO UPDATE SET cursor_json = excluded.cursor_json, completed_at = excluded.completed_at
+		 WHERE sync_checkpoints.account_id = excluded.account_id`,
+	).bind(providerId, accountId, cursor ? JSON.stringify({ value: cursor }) : null, completedAt).run();
+	await db.prepare("UPDATE providers SET last_synced_at = ?1 WHERE account_id = ?2 AND id = ?3").bind(completedAt, accountId, providerId).run();
 }

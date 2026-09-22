@@ -2,13 +2,12 @@ import type { D1Database } from "@cloudflare/workers-types";
 
 export interface WorkerEnv {
 	DB: D1Database;
+	ASSETS?: { fetch(request: Request): Promise<Response> };
 	APP_URL?: string;
 	WEB_APP_URL?: string;
-	AUTH_REQUIRED?: string;
 	SESSION_SECRET?: string;
 	GITHUB_CLIENT_ID?: string;
 	GITHUB_CLIENT_SECRET?: string;
-	GITHUB_OAUTH_SCOPE?: string;
 	GITHUB_API_URL?: string;
 	TANGLED_BOBBIN_URL?: string;
 	TANGLED_RESOLVER_URL?: string;

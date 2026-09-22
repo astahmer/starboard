@@ -1,6 +1,6 @@
 # Starboard API
 
-Cloudflare Worker backend for Starboard. It stores normalized providers,
+Cloudflare Worker backend for Starboard. It stores account-owned providers,
 entries, collections, credentials, automations, and sync checkpoints in D1,
 and serves the same search service through REST and MCP.
 
@@ -12,15 +12,15 @@ From repository root:
 pnpm starboard-api:dev
 ```
 
-Copy `apps/starboard-api/.env.example` to `apps/starboard-api/.env` when you
-want OAuth, embeddings, or the optional classifier. Alchemy starts a local
-Worker at `http://localhost:1337`, force-reconciles local D1 migrations, and
-provisions the binding. Useful
-checks:
+Copy `apps/starboard-api/.env.example` to `apps/starboard-api/.env` and fill in
+GitHub App credentials to enable sign-in. Alchemy starts a local Worker at
+`http://localhost:1337`, applies local D1 migrations, and provisions the
+binding. Only `/api/health` and `/api/me` are public; workspace routes require
+the signed-in account's session.
 
 ```bash
 curl http://localhost:1337/api/health
-curl 'http://localhost:1337/api/search?query=react&mode=hybrid'
+curl http://localhost:1337/api/me
 ```
 
 MCP clients should connect to `http://localhost:1337/mcp` using Streamable
@@ -34,15 +34,21 @@ pnpm starboard-api:plan
 pnpm starboard-api:deploy
 ```
 
-Alchemy owns the Worker and D1 resources. Use an explicit Alchemy stage when
-you need separate preview and production state, for example
-`pnpm --filter starboard-api plan --stage production`. Set secrets through
-Cloudflare/Alchemy configuration; never put OAuth tokens in the browser cache.
+The hosted UI and API use one origin, with a production D1 database and
+scheduled sync. Before deploying, configure `GITHUB_CLIENT_ID`,
+`GITHUB_CLIENT_SECRET`, `SESSION_SECRET`, `APP_URL`, and `WEB_APP_URL` in the
+Alchemy environment. Register
+`<APP_URL>/api/auth/github/callback` as a GitHub App callback and grant only
+the user `Starring: read` permission. Set both origins to the deployed site's
+URL. Use `pnpm site:plan` to preview and `pnpm site:deploy` to deploy the
+combined app.
 
 ## Implemented boundary
 
-- GitHub OAuth stores encrypted credentials server-side and syncs the starred
-  repositories endpoint, including `starred_at` and cursor-based backfill.
+- GitHub App user authorization stores encrypted credentials server-side and
+  syncs the authenticated user's starred repositories, including `starred_at`
+  and resumable cursor-based backfill. The API syncs up to five 100-repository
+  pages per request; the browser continues queued pages until the import ends.
 - Tangled sync resolves a handle through AT Protocol and reads stars/repository
   metadata through Bobbin. A public handle is enough for public stars; the
   configurable PKCE OAuth path is available for deployments with a Tangled
@@ -57,9 +63,8 @@ Cloudflare/Alchemy configuration; never put OAuth tokens in the browser cache.
 
 ## Security boundary
 
-This starter is a single-workspace deployment: normalized rows are shared by
-the Worker, while OAuth credentials are encrypted and associated with the
-default account. Keep the API private behind Cloudflare Access or set
-`AUTH_REQUIRED=true` before exposing it to the internet. The UI sends browser
-credentials only to the configured API origin, and local-first edits wait in
-the IndexedDB outbox when the API is unavailable.
+Every workspace, provider, entry, collection, automation, credential, and
+sync checkpoint is scoped to the stable GitHub account ID. Sessions use
+HttpOnly, SameSite cookies; OAuth uses state validation and PKCE. The UI
+does not seed or cache sample data. GitHub credentials remain server-side and
+encrypted at rest.
