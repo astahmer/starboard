@@ -16,7 +16,6 @@ start(["--filter", "starboard-api", "dev"], {
 	WEB_APP_URL: process.env.WEB_APP_URL ?? "http://localhost:5174",
 });
 start(["--filter", "starboard", "dev", "--host", "localhost"], {
-	VITE_STARBOARD_API_URL: process.env.VITE_STARBOARD_API_URL ?? "http://localhost:1337",
 });
 
 let stopping = false;

@@ -120,20 +120,3 @@ export interface PluginManifest {
 }
 
 export type SearchMode = "hybrid" | "fuzzy" | "semantic";
-
-export interface WorkspacePreferences {
-	automationEnabled: boolean;
-}
-
-export interface WorkspaceSnapshot {
-	version: 1;
-	entries: Entry[];
-	providers: Provider[];
-	collections: Collection[];
-	automations?: Automation[];
-	plugins?: PluginManifest[];
-	lastSyncedAt: string;
-	preferences: WorkspacePreferences;
-	/** Local-only monotonic wall-clock stamp used to reconcile storage layers. */
-	cacheUpdatedAt?: string;
-}

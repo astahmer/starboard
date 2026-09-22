@@ -37,7 +37,21 @@ export interface SearchResponse {
 	entries: Entry[];
 	mode: SearchMode;
 	local: boolean;
-	}
+}
+
+export interface WorkspaceAccount {
+	id: string;
+	handle: string;
+	displayName: string;
+	avatarUrl?: string;
+}
+
+export interface MeResponse {
+	account: WorkspaceAccount | null;
+	authenticated: boolean;
+	providers: Provider[];
+	canConnectGithub: boolean;
+}
 
 export interface WorkspaceResponse {
 	entries: Entry[];
