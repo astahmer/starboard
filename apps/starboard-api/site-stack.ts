@@ -48,6 +48,7 @@ export default Alchemy.Stack(
 			},
 			crons: ["*/15 * * * *"],
 			assets: {
+				runWorkerFirst: true,
 				notFoundHandling: "single-page-application",
 			},
 		});
