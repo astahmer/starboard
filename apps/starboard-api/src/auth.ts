@@ -229,9 +229,11 @@ export async function startGithubOAuth(env: WorkerEnv, request: Request): Promis
 	url.searchParams.set("code_challenge", await pkceChallenge(codeVerifier));
 	url.searchParams.set("code_challenge_method", "S256");
 	url.searchParams.set("state", state);
-	const response = Response.redirect(url, 302);
-	response.headers.append("Set-Cookie", oauthStateCookie(state, request));
-	return response;
+	const headers = new Headers({
+		Location: url.toString(),
+		"Set-Cookie": oauthStateCookie(state, request),
+	});
+	return new Response(null, { status: 302, headers });
 }
 
 export async function finishGithubOAuth(env: WorkerEnv, request: Request): Promise<Response> {
