@@ -14,13 +14,13 @@
 	"dependencies": {
 		"@modelcontextprotocol/server": "2.0.0",
 		"agents": "0.22.0",
-		"alchemy": "2.0.0-beta.76",
-		"effect": "4.0.0-rc.112",
+		"alchemy": "2.0.0-beta.79",
+		"effect": "4.0.0-rc.117",
 		"zod": "4.5.4"
 	},
 	"devDependencies": {
 		"@cloudflare/workers-types": "5.20260908.1",
-		"@effect/platform-node": "4.0.0-rc.112",
+		"@effect/platform-node": "4.0.0-rc.117",
 		"typescript": "7.0.2"
 	}
 }
