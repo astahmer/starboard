@@ -23,6 +23,9 @@ export default Alchemy.Stack(
 			command: "pnpm build",
 			outdir: "dist",
 			main: "./src/index.ts",
+			compatibility: {
+				flags: ["assets_navigation_has_no_effect"],
+			},
 			env: {
 				DB: database,
 				APP_URL: yield* optional(Config.String("APP_URL"), ""),
@@ -48,7 +51,7 @@ export default Alchemy.Stack(
 			},
 			crons: ["*/15 * * * *"],
 			assets: {
-				runWorkerFirst: true,
+				runWorkerFirst: ["/api/*", "/mcp", "/mcp/*"],
 				notFoundHandling: "single-page-application",
 			},
 		});
