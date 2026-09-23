@@ -169,17 +169,17 @@ function App() {
 	const [creatingCollection, setCreatingCollection] = useState(false);
 	const [connectingTangled, setConnectingTangled] = useState(false);
 	const initialSyncStarted = useRef(new Set<string>());
-	const navigateWorkspace = useCallback((route: WorkspaceRoute, changes: Partial<WorkspaceSearch>, replace = false) => {
+	const navigateWorkspace = useCallback((route: WorkspaceRoute, changes: Partial<WorkspaceSearch>, replace = false, resetScroll = true) => {
 		const search = { ...location.search, ...changes };
 		if (route.kind === "provider") {
-			void navigate({ to: "/sources/$providerId", params: { providerId: route.providerId }, search, replace });
+			void navigate({ to: "/sources/$providerId", params: { providerId: route.providerId }, search, replace, resetScroll });
 			return;
 		}
 		if (route.kind === "collection") {
-			void navigate({ to: "/collections/$collectionId", params: { collectionId: route.collectionId }, search, replace });
+			void navigate({ to: "/collections/$collectionId", params: { collectionId: route.collectionId }, search, replace, resetScroll });
 			return;
 		}
-		void navigate({ to: "/", search, replace });
+		void navigate({ to: "/", search, replace, resetScroll });
 	}, [location.search, navigate]);
 
 	const loadAccount = useCallback(async () => {
@@ -382,7 +382,7 @@ function App() {
 	};
 
 	const handleSelectEntry = (entryId: string) => {
-		navigateWorkspace(workspaceRoute, { entry: entryId });
+		navigateWorkspace(workspaceRoute, { entry: entryId }, false, false);
 	};
 
 	return (
