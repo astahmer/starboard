@@ -15,9 +15,15 @@ export interface ProviderSyncPage {
 	remoteHandle?: string;
 }
 
+export interface ProviderSnapshot {
+	starCount?: number;
+	latestStarredAt?: string;
+}
+
 export interface RemoteProviderAdapter {
 	kind: Provider["kind"];
 	sync(context: ProviderSyncContext): Promise<ProviderSyncPage>;
+	snapshot?(context: ProviderSyncContext): Promise<ProviderSnapshot | undefined>;
 }
 
 export class ProviderSyncError extends Error {
@@ -38,13 +44,21 @@ export async function readProviderJson<T>(response: Response, providerName: stri
 	return response.json() as Promise<T>;
 }
 
-export function parseNextLink(value: string | null): string | undefined {
+function parseLinkRelation(value: string | null, relation: string): string | undefined {
 	if (!value) return undefined;
 	for (const part of value.split(",")) {
 		const match = part.match(/<([^>]+)>;\s*rel="([^"]+)"/);
-		if (match?.[1] && match[2] === "next") return match[1];
+		if (match?.[1] && match[2] === relation) return match[1];
 	}
 	return undefined;
+}
+
+export function parseNextLink(value: string | null): string | undefined {
+	return parseLinkRelation(value, "next");
+}
+
+export function parseLastLink(value: string | null): string | undefined {
+	return parseLinkRelation(value, "last");
 }
 
 export function stableProviderEntryId(providerId: string, externalId: string): string {

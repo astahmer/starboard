@@ -136,11 +136,23 @@ export interface SyncCheckpointRecord {
 	completedAt?: string;
 }
 
+export interface ProviderEntrySnapshot {
+	starCount: number;
+	latestStarredAt?: string;
+}
+
 export async function getSyncCheckpoint(db: D1Database, accountId: string, providerId: string): Promise<SyncCheckpointRecord | undefined> {
 	const row = await db.prepare("SELECT provider_id, cursor_json, completed_at FROM sync_checkpoints WHERE account_id = ?1 AND provider_id = ?2 LIMIT 1").bind(accountId, providerId).first<{ provider_id: string; cursor_json: string | null; completed_at: string | null }>();
 	if (!row) return undefined;
 	const parsed = parseJson<{ value?: string }>(row.cursor_json, {});
 	return { providerId: row.provider_id, cursor: parsed.value, completedAt: row.completed_at ?? undefined };
+}
+
+export async function getProviderEntrySnapshot(db: D1Database, accountId: string, providerId: string): Promise<ProviderEntrySnapshot> {
+	const row = await db.prepare(
+		"SELECT COUNT(*) AS star_count, MAX(starred_at) AS latest_starred_at FROM entries WHERE account_id = ?1 AND provider_id = ?2",
+	).bind(accountId, providerId).first<{ star_count: number; latest_starred_at: string | null }>();
+	return { starCount: row?.star_count ?? 0, latestStarredAt: row?.latest_starred_at ?? undefined };
 }
 
 export async function listEntries(db: D1Database, accountId: string): Promise<Entry[]> {
@@ -347,4 +359,11 @@ export async function recordSyncCheckpoint(db: D1Database, accountId: string, pr
 		 WHERE sync_checkpoints.account_id = excluded.account_id`,
 	).bind(providerId, accountId, cursor ? JSON.stringify({ value: cursor }) : null, completedAt).run();
 	if (completedAt) await db.prepare("UPDATE providers SET last_synced_at = ?1 WHERE account_id = ?2 AND id = ?3").bind(completedAt, accountId, providerId).run();
+}
+
+export async function markSyncCheckpointCurrent(db: D1Database, accountId: string, providerId: string, lastSyncedAt: string): Promise<void> {
+	const completedCursor = JSON.stringify({ value: JSON.stringify({ complete: true, seenExternalIds: [] }) });
+	await db.prepare(
+		"UPDATE sync_checkpoints SET cursor_json = ?1, completed_at = COALESCE(completed_at, ?2) WHERE account_id = ?3 AND provider_id = ?4",
+	).bind(completedCursor, lastSyncedAt, accountId, providerId).run();
 }

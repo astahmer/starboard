@@ -245,7 +245,7 @@ function App() {
 			const report = await syncRemoteProvider(provider.id, (progress) => setSyncProgress(progress.entriesFetched));
 			const next = await fetchRemoteWorkspace();
 			setWorkspace(next);
-			setSyncNotice(`Synced ${report.indexed.toLocaleString()} repositories from ${provider.name}.`);
+			setSyncNotice(report.message === "Already up to date." ? `${provider.name} is already up to date.` : `Synced ${report.indexed.toLocaleString()} repositories from ${provider.name}.`);
 		} catch (cause) {
 			setError(cause instanceof Error ? cause.message : "Source sync failed");
 		} finally {

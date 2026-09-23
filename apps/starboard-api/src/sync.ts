@@ -1,10 +1,13 @@
 import type { SyncResponse } from "../../starboard/src/lib/api-contract";
-import { getProvider, getSyncCheckpoint, recordSyncCheckpoint, removeEntriesNotSeen, upsertEntries } from "./repository";
+import { getProvider, getProviderEntrySnapshot, getSyncCheckpoint, markSyncCheckpointCurrent, recordSyncCheckpoint, removeEntriesNotSeen, upsertEntries } from "./repository";
 import { getRemoteProviderAdapter } from "./providers/registry";
-import type { ProviderSyncPage } from "./providers/types";
+import type { ProviderSnapshot, ProviderSyncPage } from "./providers/types";
 import type { WorkerEnv } from "./env";
 import { embedText } from "./embeddings";
 import { runAutomations } from "./automation";
+
+const oneDayMs = 24 * 60 * 60 * 1000;
+const oneWeekMs = 7 * oneDayMs;
 
 interface StoredCursor {
 	next?: string;
@@ -34,6 +37,37 @@ export function isSyncPending(cursor: string | undefined): boolean {
 	return Boolean(cursor) && parseCursor(cursor).complete !== true;
 }
 
+function isWithinAge(timestamp: string, maxAgeMs: number, now = Date.now()): boolean {
+	const parsed = Date.parse(timestamp);
+	return Number.isFinite(parsed) && now - parsed >= 0 && now - parsed < maxAgeMs;
+}
+
+function snapshotsMatch(local: { starCount: number; latestStarredAt?: string }, remote: ProviderSnapshot): boolean {
+	let compared = false;
+	if (remote.starCount !== undefined) {
+		if (local.starCount !== remote.starCount) return false;
+		compared = true;
+	}
+	if (remote.latestStarredAt !== undefined) {
+		if (local.latestStarredAt !== remote.latestStarredAt) return false;
+		compared = true;
+	}
+	return compared;
+}
+
+function alreadyCurrentReport(providerId: string, lastSyncedAt: string): SyncResponse {
+	return {
+		providerId,
+		added: 0,
+		updated: 0,
+		removed: 0,
+		indexed: 0,
+		completedAt: lastSyncedAt,
+		status: "completed",
+		message: "Already up to date.",
+	};
+}
+
 export class SyncServiceError extends Error {
 	readonly status: number;
 
@@ -58,7 +92,23 @@ export async function syncProvider(
 	const adapter = getRemoteProviderAdapter(provider.kind);
 	if (!adapter) throw new SyncServiceError(`No remote adapter registered for ${provider.kind}`, 422);
 
-	const checkpoint = requestedCursor ? { next: requestedCursor, complete: false, seenExternalIds: [] } : parseCursor((await getSyncCheckpoint(env.DB, accountId, providerId))?.cursor);
+	const checkpointRecord = requestedCursor ? undefined : await getSyncCheckpoint(env.DB, accountId, providerId);
+	const hasPendingCheckpoint = !requestedCursor && isSyncPending(checkpointRecord?.cursor);
+	if (!requestedCursor && provider.lastSyncedAt) {
+		const remoteSnapshot = adapter.snapshot ? await adapter.snapshot({ env, provider, accessToken }) : undefined;
+		if (remoteSnapshot) {
+			const localSnapshot = await getProviderEntrySnapshot(env.DB, accountId, providerId);
+			if (isWithinAge(provider.lastSyncedAt, oneWeekMs) && snapshotsMatch(localSnapshot, remoteSnapshot)) {
+				if (hasPendingCheckpoint) await markSyncCheckpointCurrent(env.DB, accountId, providerId, provider.lastSyncedAt);
+				return alreadyCurrentReport(providerId, provider.lastSyncedAt);
+			}
+		} else if (!adapter.snapshot && isWithinAge(provider.lastSyncedAt, oneDayMs)) {
+			if (hasPendingCheckpoint) await markSyncCheckpointCurrent(env.DB, accountId, providerId, provider.lastSyncedAt);
+			return alreadyCurrentReport(providerId, provider.lastSyncedAt);
+		}
+	}
+
+	const checkpoint = requestedCursor ? { next: requestedCursor, complete: false, seenExternalIds: [] } : parseCursor(checkpointRecord?.cursor);
 	let cursor = checkpoint.complete ? undefined : checkpoint.next;
 	let hasMore = false;
 	let pages = 0;
@@ -93,7 +143,7 @@ export async function syncProvider(
 	const removed = complete && !requestedCursor ? await removeEntriesNotSeen(env.DB, accountId, providerId, seenExternalIds) : 0;
 	await recordSyncCheckpoint(env.DB, accountId, providerId, serializeCursor(cursor, complete, complete ? new Set() : seenExternalIds), complete);
 	for (const entry of addedEntries.slice(0, 50)) await runAutomations(env, accountId, "entry.created", entry);
-	await runAutomations(env, accountId, "sync.completed");
+	if (complete) await runAutomations(env, accountId, "sync.completed");
 	return {
 		providerId,
 		added,

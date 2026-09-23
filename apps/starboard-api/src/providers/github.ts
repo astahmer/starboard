@@ -1,6 +1,9 @@
 import type { Entry, Provider } from "../../../starboard/src/lib/types";
+import { z } from "zod";
 import type { ProviderSyncContext, ProviderSyncPage, RemoteProviderAdapter } from "./types";
-import { parseNextLink, ProviderSyncError, readProviderJson, stableProviderEntryId } from "./types";
+import { parseLastLink, parseNextLink, ProviderSyncError, readProviderJson, stableProviderEntryId } from "./types";
+
+const githubSnapshotPayloadSchema = z.array(z.object({ starred_at: z.string().optional() }).passthrough());
 
 interface GitHubRepo {
 	id: number;
@@ -87,19 +90,54 @@ function normalize(payload: GitHubStarredRepo, provider: Provider): Entry | unde
 	};
 }
 
+function githubHeaders(accessToken: string): HeadersInit {
+	return {
+		Accept: "application/vnd.github.star+json",
+		Authorization: `Bearer ${accessToken}`,
+		"User-Agent": "Starboard",
+		"X-GitHub-Api-Version": "2026-03-10",
+	};
+}
+
 export const githubAdapter: RemoteProviderAdapter = {
 	kind: "github",
+	async snapshot({ env, accessToken }: ProviderSyncContext) {
+		if (!accessToken) throw new ProviderSyncError("GitHub is not connected. Authorize GitHub before syncing.", 401);
+		const apiBase = (env.GITHUB_API_URL || "https://api.github.com").replace(/\/$/, "");
+		const response = await fetch(`${apiBase}/user/starred?sort=created&direction=desc&per_page=1&page=1`, {
+			headers: githubHeaders(accessToken),
+		});
+		const result = githubSnapshotPayloadSchema.safeParse(await readProviderJson<unknown>(response, "GitHub"));
+		if (!result.success) return undefined;
+		const payload = result.data;
+		const linkHeader = response.headers.get("link");
+		const last = parseLastLink(linkHeader);
+		const next = parseNextLink(linkHeader);
+		let starCount: number;
+		if (last) {
+			let lastPage: number;
+			try {
+				lastPage = Number(new URL(last).searchParams.get("page"));
+			} catch {
+				return undefined;
+			}
+			if (!Number.isSafeInteger(lastPage) || lastPage < 1) return undefined;
+			starCount = lastPage;
+		} else {
+			if (next) return undefined;
+			starCount = payload.length;
+		}
+		if (starCount === 0) return { starCount: 0 };
+		const newest = payload[0];
+		if (payload.length !== 1 || !newest?.starred_at) return undefined;
+		return { starCount, latestStarredAt: newest.starred_at };
+	},
 	async sync({ env, provider, accessToken, cursor }: ProviderSyncContext): Promise<ProviderSyncPage> {
 		if (!accessToken) throw new ProviderSyncError("GitHub is not connected. Authorize GitHub before syncing.", 401);
 		const apiBase = (env.GITHUB_API_URL || "https://api.github.com").replace(/\/$/, "");
 		const page = Math.max(1, Number(cursor || "1"));
 		const response = await fetch(`${apiBase}/user/starred?sort=created&direction=desc&per_page=100&page=${page}`, {
-			headers: {
-				Accept: "application/vnd.github.star+json",
-				Authorization: `Bearer ${accessToken}`,
-				"User-Agent": "Starboard",
-				"X-GitHub-Api-Version": "2026-03-10",
-			},
+			headers: githubHeaders(accessToken),
 		});
 		const payload = await readProviderJson<GitHubStarredRepo[]>(response, "GitHub");
 		const entries = payload.map((item) => normalize(item, provider)).filter((item): item is Entry => Boolean(item));
