@@ -607,12 +607,12 @@ function App() {
 							</Avatar>
 						</div>
 					</header>
-					<main className="mx-auto max-w-[1380px] px-5 py-8 sm:px-8 lg:px-10 lg:py-10">
-						<div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
+					<main className="mx-auto max-w-[1380px] px-5 py-6 sm:px-8 lg:px-10 lg:py-8">
+						<div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
 							<div>
-								<p className="mb-2 text-sm font-medium text-muted-foreground">Your library</p>
-								<h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Starred repositories</h1>
-								<p className="mt-2 text-sm text-muted-foreground">{entries.length.toLocaleString()} {entries.length === 1 ? "repository" : "repositories"} from your connected sources</p>
+								<p className="mb-1 text-xs font-medium text-muted-foreground">Your library</p>
+								<h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Starred repositories</h1>
+								<p className="mt-1 text-sm text-muted-foreground">{entries.length.toLocaleString()} {entries.length === 1 ? "repository" : "repositories"} from your connected sources</p>
 							</div>
 							<Button variant="outline" onClick={() => syncTarget && void synchronize(syncTarget)} disabled={!syncTarget || Boolean(syncingProviderId)}>
 								{syncingProviderId === syncTarget?.id ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
@@ -629,7 +629,7 @@ function App() {
 							</div>
 						)}
 
-						<div className="mt-8 flex flex-col gap-4 border-b pb-5 xl:flex-row xl:items-center xl:justify-between">
+						<div className="mt-5 flex flex-col gap-3 border-b pb-4 xl:flex-row xl:items-center xl:justify-between">
 							<div className="flex flex-wrap items-center gap-3">
 								<Tabs value={view} onValueChange={handleViewChange}>
 									<TabsList variant="line">
@@ -681,12 +681,12 @@ function App() {
 							</div>
 						</div>
 
-						<div className="mt-6 flex flex-wrap items-center gap-2 lg:hidden">
+						<div className="mt-4 flex flex-wrap items-center gap-2 lg:hidden">
 							<Button size="sm" variant={providerFilter === "all" ? "secondary" : "ghost"} onClick={() => handleSelectProvider("all")}>All sources</Button>
 							{providers.map((provider) => <Button key={provider.id} size="sm" variant={providerFilter === provider.id ? "secondary" : "ghost"} onClick={() => handleSelectProvider(provider.id)}><ProviderIcon provider={provider} />{provider.name}</Button>)}
 						</div>
 
-						<div className="mt-7 grid items-start gap-8 xl:grid-cols-[minmax(0,1fr)_340px]">
+						<div className="mt-5 grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
 							<section aria-label="Repository results" className="min-w-0">
 								<div className="mb-1 flex items-center justify-between gap-4">
 									<h2 className="text-sm font-medium">{selectedCollection?.name ?? activeProvider?.name ?? "Repositories"}</h2>
@@ -824,23 +824,25 @@ function SidebarButton({ active, icon, label, count, onClick, detail }: { active
 
 function RepositoryRow({ entry, selected, saving, onSelect, onTogglePinned }: { entry: Entry; selected: boolean; saving: boolean; onSelect: () => void; onTogglePinned: () => void }) {
 	return (
-		<div className={cn("flex min-w-0 items-start gap-3 px-2 py-4 transition-colors sm:px-3", selected && "bg-card", "hover:bg-card/70")}>
+		<div className={cn("flex min-w-0 items-center gap-3 px-2 py-2.5 transition-colors sm:px-3", selected && "bg-card", "hover:bg-card/70")}>
 			<button type="button" onClick={onSelect} className="min-w-0 flex-1 text-left">
 				<div className="flex min-w-0 items-center gap-2">
 					<Code2 className="size-4 shrink-0 text-muted-foreground" />
 					<h3 className="truncate font-medium tracking-tight">{entry.title}</h3>
 					{!entry.isRead && <Badge variant="secondary" className="shrink-0 px-1.5 py-0 text-[10px]">New</Badge>}
 				</div>
-				<p className="mt-1.5 line-clamp-2 text-sm leading-6 text-muted-foreground">{entry.summary}</p>
-				<div className="mt-2 flex flex-wrap items-center gap-1.5">
-					{entry.tags.slice(0, 4).map((tag) => <Badge key={tag} variant="outline" className="rounded-md px-1.5 py-0 font-normal text-muted-foreground">{tag}</Badge>)}
-					{entry.tags.length > 4 && <span className="text-xs text-muted-foreground">+{entry.tags.length - 4}</span>}
+				<div className="mt-1 flex min-w-0 items-center gap-2">
+					<p className="min-w-0 flex-1 truncate text-sm leading-5 text-muted-foreground">{entry.summary}</p>
+					<div className="hidden shrink-0 items-center gap-1.5 md:flex">
+						{entry.tags.slice(0, 2).map((tag) => <Badge key={tag} variant="outline" className="rounded-md px-1.5 py-0 font-normal text-muted-foreground">{tag}</Badge>)}
+						{entry.tags.length > 2 && <span className="text-xs text-muted-foreground">+{entry.tags.length - 2}</span>}
+					</div>
 				</div>
 			</button>
-			<div className="flex shrink-0 flex-col items-end gap-2 pt-0.5 text-xs text-muted-foreground">
-				<span className="inline-flex items-center gap-1.5" aria-label={entry.stars === undefined ? "Repository popularity unavailable" : `${entry.stars.toLocaleString()} GitHub stars on ${entry.title}`}><Star className="size-3.5" />{formatNumber(entry.stars)} <span className="hidden sm:inline">repo stars</span></span>
-				{entry.language && <span>{entry.language}</span>}
-				<Button variant="ghost" size="icon" className="size-7" aria-label={entry.isPinned ? "Unpin repository" : "Pin repository"} aria-pressed={entry.isPinned} onClick={onTogglePinned} disabled={saving}>
+			<div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+				<span className="inline-flex items-center gap-1.5 tabular-nums" aria-label={entry.stars === undefined ? "Repository popularity unavailable" : `${entry.stars.toLocaleString()} GitHub stars on ${entry.title}`}><Star className="size-3.5" />{formatNumber(entry.stars)}</span>
+				{entry.language && <span className="hidden max-w-24 truncate sm:inline" title={entry.language}>{entry.language}</span>}
+				<Button variant="ghost" size="icon" className="size-8" aria-label={entry.isPinned ? "Unpin repository" : "Pin repository"} aria-pressed={entry.isPinned} onClick={onTogglePinned} disabled={saving}>
 					{entry.isPinned ? <BookmarkCheck className="size-4 text-primary" /> : <Bookmark className="size-4" />}
 				</Button>
 			</div>
@@ -867,7 +869,7 @@ function VirtualizedRepositoryList({ entries, selectedEntryId, savingEntryId, on
 	}, []);
 	const virtualizer = useWindowVirtualizer({
 		count: entries.length,
-		estimateSize: () => 144,
+		estimateSize: () => 72,
 		getItemKey: (index) => entries[index]?.id ?? index,
 		overscan: 8,
 		scrollMargin,
