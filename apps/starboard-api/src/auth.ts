@@ -77,6 +77,12 @@ function safeReturnTo(env: WorkerEnv, request: Request, value: string | null): s
 	return `${webOrigin}/`;
 }
 
+function redirectResponse(input: { destination: URL | string; cookies?: string[] }): Response {
+	const headers = new Headers({ Location: input.destination.toString() });
+	for (const cookie of input.cookies ?? []) headers.append("Set-Cookie", cookie);
+	return new Response(null, { status: 302, headers });
+}
+
 function missingConfiguration(message: string): Response {
 	return new Response(message, { status: 503, headers: { "content-type": "text/plain; charset=utf-8" } });
 }
@@ -85,7 +91,7 @@ function redirectWithError(request: Request, returnTo: string, message: string):
 	const url = new URL(returnTo, new URL(request.url).origin);
 	url.searchParams.set("auth_error", message);
 	const state = new URL(request.url).searchParams.get("state");
-	return state ? clearOAuthStateCookie(request, Response.redirect(url, 302), state) : Response.redirect(url, 302);
+	return state ? clearOAuthStateCookie(request, redirectResponse({ destination: url }), state) : redirectResponse({ destination: url });
 }
 
 async function storeAuthState(env: WorkerEnv, state: AuthState): Promise<void> {
@@ -137,8 +143,9 @@ function oauthStateCookie(state: string, request: Request): string {
 
 function clearOAuthStateCookie(request: Request, response: Response, state: string): Response {
 	const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
-	response.headers.append("Set-Cookie", `${oauthStateCookieName(state)}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`);
-	return response;
+	const headers = new Headers(response.headers);
+	headers.append("Set-Cookie", `${oauthStateCookieName(state)}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`);
+	return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
 export async function sessionAccountIdForRequest(env: WorkerEnv, request: Request): Promise<string | undefined> {
@@ -229,11 +236,7 @@ export async function startGithubOAuth(env: WorkerEnv, request: Request): Promis
 	url.searchParams.set("code_challenge", await pkceChallenge(codeVerifier));
 	url.searchParams.set("code_challenge_method", "S256");
 	url.searchParams.set("state", state);
-	const headers = new Headers({
-		Location: url.toString(),
-		"Set-Cookie": oauthStateCookie(state, request),
-	});
-	return new Response(null, { status: 302, headers });
+	return redirectResponse({ destination: url, cookies: [oauthStateCookie(state, request)] });
 }
 
 export async function finishGithubOAuth(env: WorkerEnv, request: Request): Promise<Response> {
@@ -263,8 +266,7 @@ export async function finishGithubOAuth(env: WorkerEnv, request: Request): Promi
 	await upsertProvider(env.DB, accountId, providerPreset(accountId, "github", `@${user.login}`));
 	await saveCredential(env, accountId, providerId, { accessToken: token.access_token, refreshToken: token.refresh_token, expiresIn: token.expires_in, scope: token.scope, tokenType: token.token_type, metadata: { login: user.login, id: String(user.id) } });
 	const session = await createSession(env, accountId);
-	const response = Response.redirect(stored.returnTo, 302);
-	response.headers.append("Set-Cookie", sessionCookie(session, request));
+	const response = redirectResponse({ destination: stored.returnTo, cookies: [sessionCookie(session, request)] });
 	return clearOAuthStateCookie(request, response, state);
 }
 
@@ -284,9 +286,7 @@ export async function startTangledOAuth(env: WorkerEnv, request: Request): Promi
 	url.searchParams.set("state", state);
 	url.searchParams.set("code_challenge", await pkceChallenge(verifier));
 	url.searchParams.set("code_challenge_method", "S256");
-	const response = Response.redirect(url, 302);
-	response.headers.append("Set-Cookie", oauthStateCookie(state, request));
-	return response;
+	return redirectResponse({ destination: url, cookies: [oauthStateCookie(state, request)] });
 }
 
 function jwtSubject(token: string): string | undefined {
@@ -324,8 +324,7 @@ export async function finishTangledOAuth(env: WorkerEnv, request: Request): Prom
 	await upsertProvider(env.DB, accountId, providerPreset(accountId, "tangled", handle));
 	await saveCredential(env, accountId, providerId, { accessToken: token.access_token, refreshToken: token.refresh_token, expiresIn: token.expires_in, scope: token.scope, tokenType: token.token_type, metadata: { handle } });
 	const session = await createSession(env, accountId);
-	const response = Response.redirect(stored.returnTo, 302);
-	response.headers.append("Set-Cookie", sessionCookie(session, request));
+	const response = redirectResponse({ destination: stored.returnTo, cookies: [sessionCookie(session, request)] });
 	return clearOAuthStateCookie(request, response, state);
 }
 
@@ -333,9 +332,7 @@ export async function logout(env: WorkerEnv, request: Request): Promise<Response
 	const raw = cookieValue(request, SESSION_COOKIE);
 	if (raw) await env.DB.prepare("DELETE FROM sessions WHERE id_hash = ?1").bind(await hashToken(raw)).run();
 	const destination = safeReturnTo(env, request, env.WEB_APP_URL ? `${env.WEB_APP_URL}/` : "/");
-	const response = Response.redirect(destination, 302);
-	response.headers.append("Set-Cookie", `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
-	return response;
+	return redirectResponse({ destination, cookies: [`${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`] });
 }
 
 export async function connectTangledHandle(env: WorkerEnv, accountId: string, handle: string): Promise<Provider> {
