@@ -5,6 +5,7 @@ import type { ProviderSnapshot, ProviderSyncPage } from "./providers/types";
 import type { WorkerEnv } from "./env";
 import { embedText } from "./embeddings";
 import { runAutomations } from "./automation";
+import { cachePublicRepositories, removePrivateRepositoryMetadata } from "./repository-metadata";
 
 const oneDayMs = 24 * 60 * 60 * 1000;
 const oneWeekMs = 7 * oneDayMs;
@@ -120,6 +121,8 @@ export async function syncProvider(
 
 	while (pages < Math.max(1, maxPages)) {
 		const page: ProviderSyncPage = await adapter.sync({ env, provider, accessToken, cursor });
+		await removePrivateRepositoryMetadata(env.DB, page.privateRepositoryIds ?? []);
+		await cachePublicRepositories(env.DB, page.publicRepositories ?? []);
 		const indexedEntries = await Promise.all(page.entries.map(async (entry) => {
 			if (entry.embedding || !env.EMBEDDING_API_URL || !env.EMBEDDING_API_KEY) return entry;
 			const embedding = await embedText(env, [entry.title, entry.summary, entry.author, ...entry.tags, ...Object.values(entry.fields ?? {}).map((value) => typeof value === "string" ? value : JSON.stringify(value))].join(" "));

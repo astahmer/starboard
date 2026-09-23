@@ -2,6 +2,7 @@ import type { D1Database } from "@cloudflare/workers-types";
 import { collectionMatches, searchEntries } from "../../starboard/src/lib/search";
 import { defaultCollections } from "../../starboard/src/lib/workspace-defaults";
 import type { Collection, CollectionRule, Entry, Provider, SearchMode } from "../../starboard/src/lib/types";
+import { parseRepositoryMetadata } from "./repository-metadata";
 
 interface ProviderRow {
 	id: string;
@@ -42,6 +43,7 @@ interface EntryRow {
 	fields_json?: string | null;
 	embedding_json?: string | null;
 	classification_json?: string | null;
+	shared_metadata_json?: string | null;
 }
 
 interface CollectionRow {
@@ -83,7 +85,8 @@ const providerFromRow = (row: ProviderRow): Provider => ({
 	settings: parseJson(row.config_json, undefined),
 });
 
-const entryFromRow = (row: EntryRow): Entry => ({
+const entryFromRow = (row: EntryRow): Entry => {
+	const entry: Entry = {
 	id: row.id,
 	providerId: row.provider_id,
 	schemaId: row.schema_id,
@@ -108,7 +111,40 @@ const entryFromRow = (row: EntryRow): Entry => ({
 	fields: parseJson(row.fields_json, undefined),
 	embedding: parseJson(row.embedding_json, undefined),
 	classification: parseJson(row.classification_json, undefined),
-});
+};
+	const metadata = parseRepositoryMetadata(row.shared_metadata_json);
+	if (!metadata) return entry;
+	return {
+		...entry,
+		title: metadata.title,
+		summary: metadata.summary,
+		url: metadata.url,
+		author: metadata.author,
+		authorHandle: metadata.authorHandle,
+		updatedAt: metadata.updatedAt,
+		language: metadata.language,
+		stars: metadata.stars,
+		forks: metadata.forks,
+		comments: metadata.comments,
+		tags: Array.from(new Set([...entry.tags, ...metadata.topics.map((topic) => topic.toLocaleLowerCase())])),
+		fields: {
+			...entry.fields,
+			repository: metadata.repository,
+			owner: metadata.owner,
+			pushedAt: metadata.pushedAt,
+		},
+	};
+};
+
+const selectEntriesWithSharedMetadata = `
+	SELECT entries.*, repository_metadata.metadata_json AS shared_metadata_json
+	FROM entries
+	LEFT JOIN providers ON providers.id = entries.provider_id AND providers.account_id = entries.account_id
+	LEFT JOIN repository_metadata ON providers.kind = 'github'
+		AND repository_metadata.external_id = entries.external_id
+		AND repository_metadata.is_public = 1
+		AND repository_metadata.metadata_json IS NOT NULL
+		AND julianday(repository_metadata.metadata_fetched_at) > julianday('now', '-1 day')`;
 
 const collectionFromRow = (row: CollectionRow): Collection => ({
 	id: row.id,
@@ -156,7 +192,7 @@ export async function getProviderEntrySnapshot(db: D1Database, accountId: string
 }
 
 export async function listEntries(db: D1Database, accountId: string): Promise<Entry[]> {
-	const result = await db.prepare("SELECT * FROM entries WHERE account_id = ?1 ORDER BY starred_at DESC").bind(accountId).all<EntryRow>();
+	const result = await db.prepare(`${selectEntriesWithSharedMetadata} WHERE entries.account_id = ?1 ORDER BY entries.starred_at DESC`).bind(accountId).all<EntryRow>();
 	return result.results.map(entryFromRow);
 }
 
@@ -178,7 +214,7 @@ export async function listCollections(db: D1Database, accountId: string): Promis
 }
 
 export async function getEntry(db: D1Database, accountId: string, id: string): Promise<Entry | undefined> {
-	const result = await db.prepare("SELECT * FROM entries WHERE account_id = ?1 AND id = ?2 LIMIT 1").bind(accountId, id).first<EntryRow>();
+	const result = await db.prepare(`${selectEntriesWithSharedMetadata} WHERE entries.account_id = ?1 AND entries.id = ?2 LIMIT 1`).bind(accountId, id).first<EntryRow>();
 	return result ? entryFromRow(result) : undefined;
 }
 

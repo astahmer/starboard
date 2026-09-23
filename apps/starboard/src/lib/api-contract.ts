@@ -1,4 +1,4 @@
-import type { Automation, Collection, Entry, PluginManifest, Provider, SearchMode } from "./types";
+import type { Automation, Collection, Entry, PluginManifest, Provider, RepositoryMetadataResponse, SearchMode } from "./types";
 
 export const apiRoutes = {
 	health: "/api/health",
@@ -70,7 +70,9 @@ export interface SyncResponse {
 	completedAt: string;
 	status: "completed" | "queued" | "failed";
 	message?: string;
-	}
+}
+
+export type EntryMetadataResponse = RepositoryMetadataResponse;
 
 /** Names exposed by the MCP server; each maps to the same application service as the HTTP API. */
 export const mcpTools = [

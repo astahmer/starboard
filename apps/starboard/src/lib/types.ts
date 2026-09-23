@@ -9,6 +9,38 @@ export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 export type EntryFields = Record<string, JsonValue>;
 
+export interface RepositoryMetadata {
+	title: string;
+	summary: string;
+	url: string;
+	author: string;
+	authorHandle: string;
+	updatedAt: string;
+	language?: string;
+	stars: number;
+	forks: number;
+	comments?: number;
+	topics: string[];
+	repository: string;
+	owner: string;
+	pushedAt: string | null;
+}
+
+export interface LatestCommit {
+	sha: string;
+	message: string;
+	url: string;
+	committedAt: string | null;
+}
+
+export interface RepositoryMetadataResponse {
+	metadata?: RepositoryMetadata;
+	latestCommit?: LatestCommit | null;
+	metadataFetchedAt?: string;
+	latestCommitFetchedAt?: string;
+	refreshing: boolean;
+}
+
 export interface ProviderSchemaField {
 	id: string;
 	label: string;

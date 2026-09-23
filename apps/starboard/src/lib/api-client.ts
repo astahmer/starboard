@@ -1,4 +1,4 @@
-import { apiRoutes, type MeResponse, type SyncResponse, type WorkspaceResponse } from "./api-contract";
+import { apiRoutes, type EntryMetadataResponse, type MeResponse, type SyncResponse, type WorkspaceResponse } from "./api-contract";
 import type { Collection, Entry, Provider } from "./types";
 
 export interface SyncProgress {
@@ -37,6 +37,10 @@ export async function fetchRemoteWorkspace(): Promise<WorkspaceResponse> {
 
 export async function patchRemoteEntry(id: string, patch: Partial<Pick<Entry, "isRead" | "isPinned" | "tags">>): Promise<Entry> {
 	return (await request<{ entry: Entry }>(`${apiRoutes.entries}/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) })).entry;
+}
+
+export async function fetchRemoteEntryMetadata(id: string): Promise<EntryMetadataResponse> {
+	return (await request<{ metadata: EntryMetadataResponse }>(`${apiRoutes.entries}/${encodeURIComponent(id)}/metadata`)).metadata;
 }
 
 export async function syncRemoteProvider(providerId: string, onProgress?: (progress: SyncProgress) => void): Promise<SyncResponse> {

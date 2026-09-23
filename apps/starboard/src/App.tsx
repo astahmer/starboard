@@ -41,8 +41,8 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { connectRemoteTangled, createRemoteCollection, fetchRemoteMe, fetchRemoteWorkspace, logoutRemote, patchRemoteEntry, providerAuthUrl, syncRemoteProvider } from "@/lib/api-client";
-import type { MeResponse, WorkspaceResponse } from "@/lib/api-contract";
+import { connectRemoteTangled, createRemoteCollection, fetchRemoteEntryMetadata, fetchRemoteMe, fetchRemoteWorkspace, logoutRemote, patchRemoteEntry, providerAuthUrl, syncRemoteProvider } from "@/lib/api-client";
+import type { EntryMetadataResponse, MeResponse, WorkspaceResponse } from "@/lib/api-contract";
 import { collectionMatches, searchEntries } from "@/lib/search";
 import type { Collection, Entry, Provider } from "@/lib/types";
 import { cn, formatDate, formatNumber, formatRelative, initials, slugify } from "@/lib/utils";
@@ -677,6 +677,35 @@ function VirtualizedRepositoryList({ entries, selectedEntryId, savingEntryId, on
 }
 
 function RepositoryDetails({ entry, saving, onToggleRead, onTogglePinned }: { entry: Entry; saving: boolean; onToggleRead: () => void; onTogglePinned: () => void }) {
+	const [repositoryMetadata, setRepositoryMetadata] = useState<EntryMetadataResponse | null>(null);
+	const supportsGithubMetadata = entry.externalId !== undefined && entry.url.startsWith("https://github.com/");
+	useEffect(() => {
+		let active = true;
+		let timeoutId: number | undefined;
+		let attempts = 0;
+		setRepositoryMetadata(null);
+		if (!supportsGithubMetadata) return () => { active = false; };
+		const loadMetadata = async () => {
+			try {
+				const response = await fetchRemoteEntryMetadata(entry.id);
+				if (!active) return;
+				setRepositoryMetadata(response);
+				if (response.refreshing && attempts < 3) {
+					attempts += 1;
+					timeoutId = window.setTimeout(() => void loadMetadata(), attempts * 1_000);
+				}
+			} catch {
+				if (active) setRepositoryMetadata({ refreshing: false });
+			}
+		};
+		void loadMetadata();
+		return () => {
+			active = false;
+			if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+		};
+	}, [entry.id, supportsGithubMetadata]);
+	const metadata = repositoryMetadata?.metadata;
+	const lastActivity = metadata?.pushedAt ?? (typeof entry.fields?.pushedAt === "string" ? entry.fields.pushedAt : undefined);
 	return (
 		<Card className="overflow-hidden shadow-sm">
 			<CardHeader className="gap-4 pb-4">
@@ -685,25 +714,30 @@ function RepositoryDetails({ entry, saving, onToggleRead, onTogglePinned }: { en
 					<Badge variant="outline" className="shrink-0 font-normal text-muted-foreground">GitHub</Badge>
 				</div>
 				<div className="min-w-0 space-y-1.5">
-					<CardTitle className="break-words text-xl tracking-tight">{entry.title}</CardTitle>
-					<CardDescription>{entry.authorHandle}</CardDescription>
+					<CardTitle className="break-words text-xl tracking-tight">{metadata?.title ?? entry.title}</CardTitle>
+					<CardDescription>{metadata?.authorHandle ?? entry.authorHandle}</CardDescription>
 				</div>
 			</CardHeader>
 			<CardContent className="space-y-5">
-				<p className="text-sm leading-6 text-muted-foreground">{entry.summary}</p>
+				<p className="text-sm leading-6 text-muted-foreground">{metadata?.summary ?? entry.summary}</p>
 				<div className="grid grid-cols-2 gap-3 rounded-lg bg-muted/60 p-3 text-sm">
-					<div><p className="text-xs text-muted-foreground">Repository stars</p><p className="mt-1 flex items-center gap-1.5 font-medium"><Star className="size-3.5" />{entry.stars?.toLocaleString() ?? "—"}</p></div>
-					<div><p className="text-xs text-muted-foreground">Language</p><p className="mt-1 font-medium">{entry.language ?? "Not specified"}</p></div>
+					<div><p className="text-xs text-muted-foreground">Repository stars</p><p className="mt-1 flex items-center gap-1.5 font-medium"><Star className="size-3.5" />{metadata?.stars.toLocaleString() ?? entry.stars?.toLocaleString() ?? "—"}</p></div>
+					<div><p className="text-xs text-muted-foreground">Language</p><p className="mt-1 font-medium">{metadata?.language ?? entry.language ?? "Not specified"}</p></div>
 					<div><p className="text-xs text-muted-foreground">Starred by you</p><p className="mt-1 font-medium">{formatDate(entry.starredAt)}</p></div>
-					<div><p className="text-xs text-muted-foreground">Last updated</p><p className="mt-1 font-medium">{formatRelative(entry.updatedAt)}</p></div>
+					<div><p className="text-xs text-muted-foreground">Last updated</p><p className="mt-1 font-medium">{formatRelative(metadata?.updatedAt ?? entry.updatedAt)}</p></div>
+					<div><p className="text-xs text-muted-foreground">Last activity</p><p className="mt-1 font-medium">{lastActivity ? formatRelative(lastActivity) : "Not available"}</p></div>
 				</div>
+				{supportsGithubMetadata && <div className="rounded-lg border p-3">
+					<p className="text-xs font-medium text-muted-foreground">Latest commit</p>
+					{repositoryMetadata?.latestCommit ? <a className="mt-1 block text-sm font-medium hover:underline" href={repositoryMetadata.latestCommit.url} target="_blank" rel="noreferrer">{repositoryMetadata.latestCommit.message.split("\n")[0]}<span className="ml-2 text-xs font-normal text-muted-foreground">{repositoryMetadata.latestCommit.committedAt ? formatRelative(repositoryMetadata.latestCommit.committedAt) : "date unavailable"}</span></a> : repositoryMetadata?.latestCommitFetchedAt ? <p className="mt-1 text-sm text-muted-foreground">No commits found.</p> : repositoryMetadata?.refreshing || !repositoryMetadata ? <p className="mt-1 flex items-center gap-2 text-sm text-muted-foreground"><LoaderCircle className="size-3.5 animate-spin" /> Fetching shared repository details…</p> : <p className="mt-1 text-sm text-muted-foreground">Latest commit is unavailable right now.</p>}
+				</div>}
 				{entry.tags.length > 0 && <div className="flex flex-wrap gap-1.5">{entry.tags.map((tag) => <Badge key={tag} variant="secondary" className="font-normal">{tag}</Badge>)}</div>}
 				<div className="flex flex-wrap gap-2">
 					<Button size="sm" variant="secondary" onClick={onToggleRead} disabled={saving}><Check className="size-4" />{entry.isRead ? "Mark unread" : "Mark read"}</Button>
 					<Button size="sm" variant="outline" onClick={onTogglePinned} disabled={saving}>{entry.isPinned ? <BookmarkCheck className="size-4" /> : <Bookmark className="size-4" />}{entry.isPinned ? "Pinned" : "Pin"}</Button>
 				</div>
 				<Separator />
-				<a className="inline-flex items-center gap-2 text-sm font-medium hover:underline" href={entry.url} target="_blank" rel="noreferrer">
+				<a className="inline-flex items-center gap-2 text-sm font-medium hover:underline" href={metadata?.url ?? entry.url} target="_blank" rel="noreferrer">
 					Open on GitHub <ArrowUpRight className="size-4" />
 				</a>
 			</CardContent>

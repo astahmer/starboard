@@ -3,12 +3,14 @@ import { createMcpHandler } from "agents/mcp/server";
 import { z } from "zod";
 import { connectTangledHandle, credentialForAccount, credentialForProvider, finishGithubOAuth, finishTangledOAuth, logout, sessionAccountIdForRequest, startGithubOAuth, startTangledOAuth } from "./auth";
 import { apiRoutes, type SearchRequest } from "../../starboard/src/lib/api-contract";
-import type { Automation, Collection, CollectionRule, Entry, JsonValue, PluginManifest, Provider, SearchMode } from "../../starboard/src/lib/types";
+import type { Automation, Collection, CollectionRule, Entry, JsonValue, PluginManifest, Provider, RepositoryMetadataResponse, SearchMode } from "../../starboard/src/lib/types";
 import { getEntry, getProvider, getSyncCheckpoint, insertCollection, listCollections, listEntries, listProviders, searchWorkspace, updateEntry, upsertProvider } from "./repository";
 import { isSyncPending, syncProvider } from "./sync";
 import { embedText } from "./embeddings";
 import { deleteAutomation, listAutomations, listPlugins, upsertAutomation, upsertPlugin } from "./automation";
 import type { WorkerEnv } from "./env";
+import { getRemoteProviderAdapter } from "./providers/registry";
+import { claimRepositoryMetadataRefresh, getRepositoryMetadataResponse, isRepositoryMetadataFresh, releaseRepositoryMetadataRefresh, saveRepositoryMetadataRefresh } from "./repository-metadata";
 
 const jsonHeaders = (request: Request): Headers => {
 	const headers = new Headers({
@@ -234,6 +236,59 @@ function createMcpServer(env: WorkerEnv, accountId: string, request: Request): M
 	return server;
 }
 
+async function refreshRepositoryMetadataForEntry(env: WorkerEnv, accountId: string, entryId: string): Promise<RepositoryMetadataResponse | undefined> {
+	const entry = await getEntry(env.DB, accountId, entryId);
+	if (!entry?.externalId) return undefined;
+	const provider = await getProvider(env.DB, accountId, entry.providerId);
+	if (!provider || provider.kind !== "github") return undefined;
+	const adapter = getRemoteProviderAdapter(provider.kind);
+	if (!adapter?.refreshRepository) return undefined;
+	let cached = await getRepositoryMetadataResponse({ db: env.DB, externalId: entry.externalId });
+	const includeMetadata = !isRepositoryMetadataFresh(cached.metadataFetchedAt);
+	const includeLatestCommit = !isRepositoryMetadataFresh(cached.latestCommitFetchedAt);
+	if ((!includeMetadata && !includeLatestCommit) || !provider.connected) return cached;
+	let accessToken: string | undefined;
+	try {
+		accessToken = await credentialForAccount(env, accountId, provider.id);
+	} catch {
+		return cached;
+	}
+	if (!accessToken) return cached;
+	const token = await claimRepositoryMetadataRefresh({ db: env.DB, externalId: entry.externalId, includeMetadata, includeLatestCommit });
+	if (!token) return getRepositoryMetadataResponse({ db: env.DB, externalId: entry.externalId });
+	try {
+		const result = await adapter.refreshRepository({
+			env,
+			provider,
+			accessToken,
+			externalId: entry.externalId,
+			fullName: cached.metadata?.title ?? entry.title,
+			includeMetadata,
+			includeLatestCommit,
+		});
+		if (result.isPublic === undefined && !cached.metadata) {
+			await releaseRepositoryMetadataRefresh(env.DB, entry.externalId, token);
+			return cached;
+		}
+		const fetchedAt = new Date().toISOString();
+		await saveRepositoryMetadataRefresh({
+			db: env.DB,
+			externalId: entry.externalId,
+			token,
+			metadata: result.metadata,
+			isPublic: result.isPublic ?? true,
+			latestCommit: result.latestCommit,
+			fetchedAt,
+		});
+		if (result.isPublic === false) return { metadata: result.metadata, metadataFetchedAt: fetchedAt, refreshing: false };
+		cached = await getRepositoryMetadataResponse({ db: env.DB, externalId: entry.externalId });
+		return cached;
+	} catch {
+		await releaseRepositoryMetadataRefresh(env.DB, entry.externalId, token);
+		return getRepositoryMetadataResponse({ db: env.DB, externalId: entry.externalId });
+	}
+}
+
 async function handleApi(request: Request, env: WorkerEnv, accountId?: string): Promise<Response> {
 	const url = new URL(request.url);
 	if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: jsonHeaders(request) });
@@ -371,6 +426,11 @@ async function handleApi(request: Request, env: WorkerEnv, accountId?: string): 
 
 	if (url.pathname === apiRoutes.entries && request.method === "GET") {
 		return json(request, { entries: await listEntries(env.DB, accountId) });
+	}
+	const entryMetadataMatch = url.pathname.match(/^\/api\/entries\/([^/]+)\/metadata$/);
+	if (entryMetadataMatch?.[1] && request.method === "GET") {
+		const response = await refreshRepositoryMetadataForEntry(env, accountId, decodeURIComponent(entryMetadataMatch[1]));
+		return response ? json(request, { metadata: response }) : failure(request, "GitHub repository not found", 404);
 	}
 
 	if (url.pathname === apiRoutes.search && request.method === "GET") {

@@ -1,4 +1,4 @@
-import type { Entry, Provider } from "../../../starboard/src/lib/types";
+import type { Entry, Provider, RepositoryMetadata } from "../../../starboard/src/lib/types";
 import type { WorkerEnv } from "../env";
 
 export interface ProviderSyncContext {
@@ -10,9 +10,24 @@ export interface ProviderSyncContext {
 
 export interface ProviderSyncPage {
 	entries: Entry[];
+	publicRepositories?: Array<{ externalId: string; metadata: RepositoryMetadata }>;
+	privateRepositoryIds?: string[];
 	nextCursor?: string;
 	hasMore: boolean;
 	remoteHandle?: string;
+}
+
+export interface RepositoryRefreshContext extends ProviderSyncContext {
+	externalId: string;
+	fullName: string;
+	includeMetadata: boolean;
+	includeLatestCommit: boolean;
+}
+
+export interface RepositoryRefreshResult {
+	metadata?: RepositoryMetadata;
+	isPublic?: boolean;
+	latestCommit?: import("../../../starboard/src/lib/types").LatestCommit | null;
 }
 
 export interface ProviderSnapshot {
@@ -24,6 +39,7 @@ export interface RemoteProviderAdapter {
 	kind: Provider["kind"];
 	sync(context: ProviderSyncContext): Promise<ProviderSyncPage>;
 	snapshot?(context: ProviderSyncContext): Promise<ProviderSnapshot | undefined>;
+	refreshRepository?(context: RepositoryRefreshContext): Promise<RepositoryRefreshResult>;
 }
 
 export class ProviderSyncError extends Error {
