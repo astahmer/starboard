@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
 	ArrowDownToLine,
 	ArrowUpRight,
@@ -44,10 +45,7 @@ import type { MeResponse, WorkspaceResponse } from "@/lib/api-contract";
 import { collectionMatches, searchEntries } from "@/lib/search";
 import type { Collection, Entry, Provider } from "@/lib/types";
 import { cn, formatDate, formatNumber, formatRelative, initials, slugify } from "@/lib/utils";
-
-type EntryView = "all" | "unread" | "pinned";
-
-const isEntryView = (value: string): value is EntryView => value === "all" || value === "unread" || value === "pinned";
+import { entryViewSchema, workspaceRouteFromPathname, type WorkspaceRoute, type WorkspaceSearch } from "@/lib/workspace-route-state";
 
 const countEntriesForProvider = (entries: Entry[], providerId: string): number => entries.filter((entry) => entry.providerId === providerId).length;
 
@@ -143,15 +141,18 @@ function ProviderIcon({ provider }: { provider: Provider }) {
 }
 
 function App() {
+	const location = useLocation();
+	const navigate = useNavigate();
+	const workspaceRoute = useMemo(() => workspaceRouteFromPathname(location.pathname), [location.pathname]);
+	const query = location.search.q ?? "";
+	const view = location.search.view ?? "all";
+	const providerFilter = workspaceRoute.kind === "provider" ? workspaceRoute.providerId : "all";
+	const collectionFilter = workspaceRoute.kind === "collection" ? workspaceRoute.collectionId : null;
+	const selectedEntryId = location.search.entry ?? null;
+	const authRedirectError = location.search.auth_error ?? null;
 	const [me, setMe] = useState<MeResponse | null>(null);
 	const [workspace, setWorkspace] = useState<WorkspaceResponse | null>(null);
 	const [loading, setLoading] = useState(true);
-	const [query, setQuery] = useState("");
-	const [view, setView] = useState<EntryView>("all");
-	const [providerFilter, setProviderFilter] = useState("all");
-	const [collectionFilter, setCollectionFilter] = useState<string | null>(null);
-	const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null);
-	const [authRedirectError] = useState<string | null>(() => new URLSearchParams(window.location.search).get("auth_error"));
 	const [error, setError] = useState<string | null>(null);
 	const [syncingProviderId, setSyncingProviderId] = useState<string | null>(null);
 	const [syncProgress, setSyncProgress] = useState(0);
@@ -166,6 +167,18 @@ function App() {
 	const [creatingCollection, setCreatingCollection] = useState(false);
 	const [connectingTangled, setConnectingTangled] = useState(false);
 	const initialSyncStarted = useRef(new Set<string>());
+	const navigateWorkspace = useCallback((route: WorkspaceRoute, changes: Partial<WorkspaceSearch>, replace = false) => {
+		const search = { ...location.search, ...changes };
+		if (route.kind === "provider") {
+			void navigate({ to: "/sources/$providerId", params: { providerId: route.providerId }, search, replace });
+			return;
+		}
+		if (route.kind === "collection") {
+			void navigate({ to: "/collections/$collectionId", params: { collectionId: route.collectionId }, search, replace });
+			return;
+		}
+		void navigate({ to: "/", search, replace });
+	}, [location.search, navigate]);
 
 	const loadAccount = useCallback(async () => {
 		setLoading(true);
@@ -210,11 +223,11 @@ function App() {
 
 	useEffect(() => {
 		if (visibleEntries.length === 0) {
-			if (selectedEntryId !== null) setSelectedEntryId(null);
+			if (selectedEntryId !== null) navigateWorkspace(workspaceRoute, { entry: undefined }, true);
 			return;
 		}
-		if (!visibleEntries.some((entry) => entry.id === selectedEntryId)) setSelectedEntryId(visibleEntries[0]?.id ?? null);
-	}, [visibleEntries, selectedEntryId]);
+		if (!visibleEntries.some((entry) => entry.id === selectedEntryId)) navigateWorkspace(workspaceRoute, { entry: visibleEntries[0]?.id }, true);
+	}, [visibleEntries, selectedEntryId, navigateWorkspace, workspaceRoute]);
 
 	const replaceEntry = (entry: Entry) => {
 		setWorkspace((current) => current ? { ...current, entries: current.entries.map((candidate) => candidate.id === entry.id ? entry : candidate) } : current);
@@ -240,7 +253,7 @@ function App() {
 	};
 
 	useEffect(() => {
-		const providerToSync = providers.find((provider) => provider.connected && (provider.syncPending || !provider.lastSyncedAt) && !initialSyncStarted.current.has(provider.id));
+		const providerToSync = providers.find((provider) => (provider.kind === "github" || provider.kind === "tangled") && provider.connected && (provider.syncPending || !provider.lastSyncedAt) && !initialSyncStarted.current.has(provider.id));
 		if (!providerToSync) return;
 		initialSyncStarted.current.add(providerToSync.id);
 		void synchronize(providerToSync);
@@ -279,9 +292,7 @@ function App() {
 			setWorkspace((current) => current ? { ...current, collections: [...current.collections, collection] } : current);
 			setCollectionName("");
 			setCollectionDescription("");
-			setCollectionFilter(collection.id);
-			setView("all");
-			setProviderFilter("all");
+			navigateWorkspace({ kind: "collection", collectionId: collection.id }, { view: undefined, entry: undefined });
 			setCollectionDialogOpen(false);
 		} catch (cause) {
 			setDialogError(cause instanceof Error ? cause.message : "Could not create this collection");
@@ -340,20 +351,36 @@ function App() {
 	const pinnedCount = entries.filter((entry) => entry.isPinned).length;
 	const activeProvider = providers.find((provider) => provider.id === providerFilter);
 	const githubProvider = providers.find((provider) => provider.kind === "github");
-	const syncTarget = activeProvider ?? providers.find((provider) => provider.kind === "github" && provider.connected) ?? providers.find((provider) => provider.connected);
+	const activeSyncProvider = activeProvider && (activeProvider.kind === "github" || activeProvider.kind === "tangled") ? activeProvider : undefined;
+	const syncTarget = activeProvider ? activeSyncProvider : providers.find((provider) => (provider.kind === "github" || provider.kind === "tangled") && provider.connected);
 	const syncingProvider = providers.find((provider) => provider.id === syncingProviderId);
 	const lastSyncedAt = providers.map((provider) => provider.lastSyncedAt).filter((value): value is string => Boolean(value)).sort().at(-1);
 
 	const handleViewChange = (value: string) => {
-		if (!isEntryView(value)) return;
-		setView(value);
-		setCollectionFilter(null);
+		const parsedView = entryViewSchema.safeParse(value);
+		if (!parsedView.success) return;
+		const targetRoute = workspaceRoute.kind === "collection" ? { kind: "all" as const } : workspaceRoute;
+		navigateWorkspace(targetRoute, { view: parsedView.data === "all" ? undefined : parsedView.data, entry: undefined });
 	};
 
 	const handleSelectProvider = (providerId: string) => {
-		setProviderFilter(providerId);
-		setCollectionFilter(null);
-		setView("all");
+		navigateWorkspace(providerId === "all" ? { kind: "all" } : { kind: "provider", providerId }, { view: undefined, entry: undefined });
+	};
+
+	const handleSelectCollection = (collectionId: string) => {
+		navigateWorkspace({ kind: "collection", collectionId }, { view: undefined, entry: undefined });
+	};
+
+	const handleSelectLibraryView = (nextView: "all" | "unread" | "pinned") => {
+		navigateWorkspace({ kind: "all" }, { view: nextView === "all" ? undefined : nextView, entry: undefined });
+	};
+
+	const handleQueryChange = (nextQuery: string) => {
+		navigateWorkspace(workspaceRoute, { q: nextQuery || undefined }, true);
+	};
+
+	const handleSelectEntry = (entryId: string) => {
+		navigateWorkspace(workspaceRoute, { entry: entryId });
 	};
 
 	return (
@@ -369,9 +396,9 @@ function App() {
 					</Button>
 					<div className="mt-8 space-y-1">
 						<p className="px-2 pb-2 text-xs font-medium text-muted-foreground">Library</p>
-						<SidebarButton active={!collectionFilter && providerFilter === "all" && view === "all"} icon={<Inbox className="size-4" />} label="All saves" count={entries.length} onClick={() => { setCollectionFilter(null); setProviderFilter("all"); setView("all"); }} />
-						<SidebarButton active={!collectionFilter && providerFilter === "all" && view === "unread"} icon={<Sparkles className="size-4" />} label="Unread" count={unreadCount} onClick={() => { setCollectionFilter(null); setProviderFilter("all"); setView("unread"); }} />
-						<SidebarButton active={!collectionFilter && providerFilter === "all" && view === "pinned"} icon={<Bookmark className="size-4" />} label="Pinned" count={pinnedCount} onClick={() => { setCollectionFilter(null); setProviderFilter("all"); setView("pinned"); }} />
+						<SidebarButton active={!collectionFilter && providerFilter === "all" && view === "all"} icon={<Inbox className="size-4" />} label="All saves" count={entries.length} onClick={() => handleSelectLibraryView("all")} />
+						<SidebarButton active={!collectionFilter && providerFilter === "all" && view === "unread"} icon={<Sparkles className="size-4" />} label="Unread" count={unreadCount} onClick={() => handleSelectLibraryView("unread")} />
+						<SidebarButton active={!collectionFilter && providerFilter === "all" && view === "pinned"} icon={<Bookmark className="size-4" />} label="Pinned" count={pinnedCount} onClick={() => handleSelectLibraryView("pinned")} />
 					</div>
 					<div className="mt-8 space-y-1">
 						<div className="flex items-center justify-between px-2 pb-2">
@@ -390,7 +417,7 @@ function App() {
 						</div>
 						<div className="space-y-1 overflow-y-auto">
 							{customCollections.map((collection) => (
-								<SidebarButton key={collection.id} active={collectionFilter === collection.id} icon={<CollectionIcon collection={collection} />} label={collection.name} count={entries.filter((entry) => collectionMatches(entry, collection)).length} onClick={() => { setCollectionFilter(collection.id); setProviderFilter("all"); setView("all"); }} />
+								<SidebarButton key={collection.id} active={collectionFilter === collection.id} icon={<CollectionIcon collection={collection} />} label={collection.name} count={entries.filter((entry) => collectionMatches(entry, collection)).length} onClick={() => handleSelectCollection(collection.id)} />
 							))}
 							{customCollections.length === 0 && <p className="px-2 py-2 text-xs leading-5 text-muted-foreground">Save a useful view as a collection.</p>}
 						</div>
@@ -457,8 +484,8 @@ function App() {
 							</Tabs>
 							<div className="relative w-full md:max-w-sm">
 								<Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-								<Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search repositories and topics" aria-label="Search repositories" className="h-10 bg-card pl-9 pr-9" />
-								{query && <Button className="absolute right-1 top-1 size-8" variant="ghost" size="icon" aria-label="Clear search" onClick={() => setQuery("")}><X className="size-4" /></Button>}
+								<Input value={query} onChange={(event) => handleQueryChange(event.target.value)} placeholder="Search repositories and topics" aria-label="Search repositories" className="h-10 bg-card pl-9 pr-9" />
+								{query && <Button className="absolute right-1 top-1 size-8" variant="ghost" size="icon" aria-label="Clear search" onClick={() => handleQueryChange("")}><X className="size-4" /></Button>}
 							</div>
 						</div>
 
@@ -483,7 +510,7 @@ function App() {
 									</div>
 								) : (
 									<div className="divide-y">
-										{visibleEntries.map((entry) => <RepositoryRow key={entry.id} entry={entry} selected={entry.id === selectedEntryId} saving={savingEntryId === entry.id} onSelect={() => setSelectedEntryId(entry.id)} onTogglePinned={() => void updateEntry(entry, { isPinned: !entry.isPinned })} />)}
+										{visibleEntries.map((entry) => <RepositoryRow key={entry.id} entry={entry} selected={entry.id === selectedEntryId} saving={savingEntryId === entry.id} onSelect={() => handleSelectEntry(entry.id)} onTogglePinned={() => void updateEntry(entry, { isPinned: !entry.isPinned })} />)}
 									</div>
 								)}
 								{lastSyncedAt && <p className="mt-5 flex items-center gap-2 text-xs text-muted-foreground"><Clock3 className="size-3.5" /> Last synced {formatRelative(lastSyncedAt)}</p>}
