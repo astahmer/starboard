@@ -18,6 +18,7 @@ export default Alchemy.Stack(
 			migrations: "./migrations",
 		});
 		const site = yield* Cloudflare.Website.StaticSite("StarboardDemo", {
+			domain: "stars.astahmer.dev",
 			cwd: "../starboard",
 			command: "pnpm build",
 			outdir: "dist",
