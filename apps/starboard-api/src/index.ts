@@ -4,8 +4,8 @@ import { z } from "zod";
 import { connectTangledHandle, credentialForAccount, credentialForProvider, finishGithubOAuth, finishTangledOAuth, logout, sessionAccountIdForRequest, startGithubOAuth, startTangledOAuth } from "./auth";
 import { apiRoutes, type SearchRequest } from "../../starboard/src/lib/api-contract";
 import type { Automation, Collection, CollectionRule, Entry, JsonValue, PluginManifest, Provider, SearchMode } from "../../starboard/src/lib/types";
-import { getEntry, getProvider, insertCollection, listCollections, listEntries, listProviders, searchWorkspace, updateEntry, upsertProvider } from "./repository";
-import { syncProvider } from "./sync";
+import { getEntry, getProvider, getSyncCheckpoint, insertCollection, listCollections, listEntries, listProviders, searchWorkspace, updateEntry, upsertProvider } from "./repository";
+import { isSyncPending, syncProvider } from "./sync";
 import { embedText } from "./embeddings";
 import { deleteAutomation, listAutomations, listPlugins, upsertAutomation, upsertPlugin } from "./automation";
 import type { WorkerEnv } from "./env";
@@ -248,7 +248,12 @@ async function handleApi(request: Request, env: WorkerEnv, accountId?: string): 
 	}
 	if (!accountId) return failure(request, "Authentication required", 401);
 	if (url.pathname === apiRoutes.workspace && request.method === "GET") {
-		return json(request, { providers: await listProviders(env.DB, accountId), entries: await listEntries(env.DB, accountId), collections: await listCollections(env.DB, accountId), automations: await listAutomations(env, accountId), plugins: await listPlugins(env, accountId) });
+		const providers = await listProviders(env.DB, accountId);
+		const providersWithSyncState = await Promise.all(providers.map(async (provider) => ({
+			...provider,
+			syncPending: isSyncPending((await getSyncCheckpoint(env.DB, accountId, provider.id))?.cursor),
+		})));
+		return json(request, { providers: providersWithSyncState, entries: await listEntries(env.DB, accountId), collections: await listCollections(env.DB, accountId), automations: await listAutomations(env, accountId), plugins: await listPlugins(env, accountId) });
 	}
 	if (url.pathname === apiRoutes.providers && request.method === "GET") return json(request, { providers: await listProviders(env.DB, accountId) });
 	if (url.pathname === apiRoutes.providers && request.method === "POST") {

@@ -58,8 +58,9 @@ async function resolveHandle(handle: string, resolverBase: string, accessToken?:
 }
 
 async function getRepo(bobbinBase: string, repo: string, accessToken?: string): Promise<RepoRecord["value"]> {
-	const url = new URL("/xrpc/sh.tangled.repo.getRepo", bobbinBase);
-	url.searchParams.set("repo", repo);
+	const repoDid = repo.startsWith("did:");
+	const url = new URL(`/xrpc/sh.tangled.repo.${repoDid ? "getRepoByRepoDid" : "getRepo"}`, bobbinBase);
+	url.searchParams.set(repoDid ? "repoDid" : "repo", repo);
 	const response = await fetch(url, accessToken ? { headers: { Authorization: `Bearer ${accessToken}` } } : undefined);
 	if (!response.ok) return undefined;
 	const body = (await response.json()) as RepoRecord;
@@ -67,8 +68,10 @@ async function getRepo(bobbinBase: string, repo: string, accessToken?: string): 
 }
 
 function normalize(provider: Provider, item: StarItem, repoRef: string, repo: RepoRecord["value"]): Entry {
-	const name = repo?.name ?? repoRef.split("/").at(-1) ?? "Tangled repository";
-	const owner = repo?.owner?.handle ?? repo?.owner?.displayName ?? repo?.owner?.did ?? "Tangled";
+	const repoUri = repo?.uri;
+	const repoUriParts = repoUri?.match(/^at:\/\/([^/]+)\/sh\.tangled\.repo\/([^/]+)$/);
+	const name = repo?.name ?? repoUriParts?.[2] ?? repoRef.split("/").at(-1) ?? "Tangled repository";
+	const owner = repo?.owner?.handle ?? repo?.owner?.displayName ?? repo?.owner?.did ?? repoUriParts?.[1] ?? "Tangled";
 	const externalId = repoRef || item.uri || name;
 	const createdAt = item.value?.createdAt ?? new Date().toISOString();
 	return {
@@ -79,7 +82,7 @@ function normalize(provider: Provider, item: StarItem, repoRef: string, repo: Re
 		kind: provider.schema.defaultKind,
 		title: `${owner} / ${name}`,
 		summary: repo?.description ?? "Tangled repository.",
-		url: repo?.uri?.startsWith("http") ? repo.uri : `https://tangled.org/${repoRef.replace(/^at:\/\//, "")}`,
+		url: repoUriParts ? `https://tangled.org/${repoUriParts[1]}/${repoUriParts[2]}` : `https://tangled.org/${repoRef.replace(/^at:\/\//, "")}`,
 		author: owner,
 		authorHandle: repo?.owner?.handle ?? repo?.owner?.did ?? owner,
 		tags: [...(repo?.topics ?? []), ...(repo?.labels ?? [])].map((tag) => tag.toLocaleLowerCase()),
@@ -91,7 +94,7 @@ function normalize(provider: Provider, item: StarItem, repoRef: string, repo: Re
 		language: repo?.language,
 		stars: repo?.starsCount ?? repo?.stars_count,
 		forks: repo?.forksCount ?? repo?.forks_count,
-		fields: { repositoryUri: repoRef, starRecordUri: item.uri ?? "" },
+		fields: { repositoryUri: repoUri ?? repoRef, starRecordUri: item.uri ?? "" },
 	};
 }
 

@@ -338,13 +338,13 @@ export async function removeEntriesNotSeen(db: D1Database, accountId: string, pr
 	return stale.length;
 }
 
-export async function recordSyncCheckpoint(db: D1Database, accountId: string, providerId: string, cursor?: string): Promise<void> {
-	const completedAt = new Date().toISOString();
+export async function recordSyncCheckpoint(db: D1Database, accountId: string, providerId: string, cursor: string, complete: boolean): Promise<void> {
+	const completedAt = complete ? new Date().toISOString() : null;
 	await db.prepare(
 		`INSERT INTO sync_checkpoints (provider_id, account_id, cursor_json, completed_at)
 		 VALUES (?1, ?2, ?3, ?4)
 		 ON CONFLICT(provider_id) DO UPDATE SET cursor_json = excluded.cursor_json, completed_at = excluded.completed_at
 		 WHERE sync_checkpoints.account_id = excluded.account_id`,
 	).bind(providerId, accountId, cursor ? JSON.stringify({ value: cursor }) : null, completedAt).run();
-	await db.prepare("UPDATE providers SET last_synced_at = ?1 WHERE account_id = ?2 AND id = ?3").bind(completedAt, accountId, providerId).run();
+	if (completedAt) await db.prepare("UPDATE providers SET last_synced_at = ?1 WHERE account_id = ?2 AND id = ?3").bind(completedAt, accountId, providerId).run();
 }

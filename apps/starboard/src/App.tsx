@@ -232,7 +232,7 @@ function App() {
 			setWorkspace(next);
 			setSyncNotice(`Synced ${report.indexed.toLocaleString()} repositories from ${provider.name}.`);
 		} catch (cause) {
-			setError(cause instanceof Error ? cause.message : "GitHub sync failed");
+			setError(cause instanceof Error ? cause.message : "Source sync failed");
 		} finally {
 			setSyncingProviderId(null);
 			setSyncProgress(0);
@@ -240,10 +240,10 @@ function App() {
 	};
 
 	useEffect(() => {
-		const githubProvider = providers.find((provider) => provider.kind === "github" && provider.connected);
-		if (!githubProvider || githubProvider.lastSyncedAt || initialSyncStarted.current.has(githubProvider.id)) return;
-		initialSyncStarted.current.add(githubProvider.id);
-		void synchronize(githubProvider);
+		const providerToSync = providers.find((provider) => provider.connected && (provider.syncPending || !provider.lastSyncedAt) && !initialSyncStarted.current.has(provider.id));
+		if (!providerToSync) return;
+		initialSyncStarted.current.add(providerToSync.id);
+		void synchronize(providerToSync);
 	}, [workspace]);
 
 	const updateEntry = async (entry: Entry, patch: Partial<Pick<Entry, "isRead" | "isPinned" | "tags">>) => {
@@ -340,6 +340,8 @@ function App() {
 	const pinnedCount = entries.filter((entry) => entry.isPinned).length;
 	const activeProvider = providers.find((provider) => provider.id === providerFilter);
 	const githubProvider = providers.find((provider) => provider.kind === "github");
+	const syncTarget = activeProvider ?? providers.find((provider) => provider.kind === "github" && provider.connected) ?? providers.find((provider) => provider.connected);
+	const syncingProvider = providers.find((provider) => provider.id === syncingProviderId);
 	const lastSyncedAt = providers.map((provider) => provider.lastSyncedAt).filter((value): value is string => Boolean(value)).sort().at(-1);
 
 	const handleViewChange = (value: string) => {
@@ -430,8 +432,8 @@ function App() {
 								<h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Starred repositories</h1>
 								<p className="mt-2 text-sm text-muted-foreground">{entries.length.toLocaleString()} {entries.length === 1 ? "repository" : "repositories"} from your connected sources</p>
 							</div>
-							<Button variant="outline" onClick={() => githubProvider && void synchronize(githubProvider)} disabled={!githubProvider || Boolean(syncingProviderId)}>
-								{syncingProviderId === githubProvider?.id ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+							<Button variant="outline" onClick={() => syncTarget && void synchronize(syncTarget)} disabled={!syncTarget || Boolean(syncingProviderId)}>
+								{syncingProviderId === syncTarget?.id ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
 								{syncingProviderId ? "Syncing" : "Sync now"}
 							</Button>
 						</div>
@@ -441,7 +443,7 @@ function App() {
 						{syncingProviderId && (
 							<div className="mt-5 flex items-center gap-2 rounded-lg border bg-card px-4 py-3 text-sm text-muted-foreground" role="status" aria-live="polite">
 								<LoaderCircle className="size-4 animate-spin text-primary" />
-								Importing your stars{syncProgress > 0 ? ` · ${syncProgress.toLocaleString()} loaded so far` : "…"}
+								Importing {syncingProvider?.name ?? "source"}{syncProgress > 0 ? ` · ${syncProgress.toLocaleString()} loaded so far` : "…"}
 							</div>
 						)}
 

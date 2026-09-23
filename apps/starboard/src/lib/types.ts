@@ -36,6 +36,7 @@ export interface Provider {
 	connected: boolean;
 	connectedAt?: string;
 	lastSyncedAt?: string;
+	syncPending?: boolean;
 	settings?: Record<string, JsonValue>;
 }
 

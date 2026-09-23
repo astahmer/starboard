@@ -30,6 +30,10 @@ function serializeCursor(next: string | undefined, complete: boolean, seenExtern
 	return JSON.stringify({ next, complete, seenExternalIds: [...seenExternalIds] });
 }
 
+export function isSyncPending(cursor: string | undefined): boolean {
+	return Boolean(cursor) && parseCursor(cursor).complete !== true;
+}
+
 export class SyncServiceError extends Error {
 	readonly status: number;
 
@@ -87,7 +91,7 @@ export async function syncProvider(
 	const completedAt = new Date().toISOString();
 	const complete = !hasMore;
 	const removed = complete && !requestedCursor ? await removeEntriesNotSeen(env.DB, accountId, providerId, seenExternalIds) : 0;
-	await recordSyncCheckpoint(env.DB, accountId, providerId, serializeCursor(cursor, complete, complete ? new Set() : seenExternalIds));
+	await recordSyncCheckpoint(env.DB, accountId, providerId, serializeCursor(cursor, complete, complete ? new Set() : seenExternalIds), complete);
 	for (const entry of addedEntries.slice(0, 50)) await runAutomations(env, accountId, "entry.created", entry);
 	await runAutomations(env, accountId, "sync.completed");
 	return {
