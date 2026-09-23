@@ -11,9 +11,14 @@ import {
 	CircleHelp,
 	Clock3,
 	Code2,
+	Copy,
+	Download,
+	FileJson,
+	FileText,
 	Github,
 	GitBranch,
 	Inbox,
+	KeyRound,
 	Layers3,
 	LoaderCircle,
 	LogOut,
@@ -22,6 +27,7 @@ import {
 	Search,
 	Sparkles,
 	Star,
+	Trash2,
 	X,
 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -37,13 +43,15 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { z } from "zod";
-import { connectRemoteTangled, createRemoteCollection, fetchRemoteEntryMetadata, fetchRemoteMe, fetchRemoteWorkspace, logoutRemote, patchRemoteEntry, providerAuthUrl, syncRemoteProvider } from "@/lib/api-client";
-import type { EntryMetadataResponse, MeResponse, WorkspaceResponse } from "@/lib/api-contract";
+import { connectRemoteTangled, createRemoteApiToken, createRemoteCollection, fetchRemoteApiTokens, fetchRemoteEntryMetadata, fetchRemoteMe, fetchRemoteWorkspace, logoutRemote, markRemoteGithubStarsRead, patchRemoteEntry, providerAuthUrl, revokeRemoteApiToken, syncRemoteProvider } from "@/lib/api-client";
+import type { ApiTokenSummary, CreatedApiToken, EntryMetadataResponse, MeResponse, WorkspaceResponse } from "@/lib/api-contract";
+import { downloadEntries } from "@/lib/export";
 import { collectionMatches, searchEntries } from "@/lib/search";
 import type { Collection, Entry, Provider } from "@/lib/types";
 import { cn, formatDate, formatNumber, formatRelative, initials, slugify } from "@/lib/utils";
@@ -193,6 +201,15 @@ function App() {
 	const [minimumStars, setMinimumStars] = useState<z.infer<typeof minimumStarsSchema>>("all");
 	const [collectionDialogOpen, setCollectionDialogOpen] = useState(false);
 	const [sourceDialogOpen, setSourceDialogOpen] = useState(false);
+	const [apiTokenDialogOpen, setApiTokenDialogOpen] = useState(false);
+	const [apiTokens, setApiTokens] = useState<ApiTokenSummary[]>([]);
+	const [apiTokenName, setApiTokenName] = useState("");
+	const [createdApiToken, setCreatedApiToken] = useState<CreatedApiToken | null>(null);
+	const [apiTokenLoading, setApiTokenLoading] = useState(false);
+	const [apiTokenBusy, setApiTokenBusy] = useState<string | null>(null);
+	const [apiTokenError, setApiTokenError] = useState<string | null>(null);
+	const [apiTokenCopied, setApiTokenCopied] = useState(false);
+	const [markingGithubRead, setMarkingGithubRead] = useState(false);
 	const [collectionName, setCollectionName] = useState("");
 	const [collectionDescription, setCollectionDescription] = useState("");
 	const [tangledHandle, setTangledHandle] = useState("");
@@ -311,6 +328,81 @@ function App() {
 		}
 	};
 
+	const markAllGithubStarsAsRead = async () => {
+		setMarkingGithubRead(true);
+		setError(null);
+		try {
+			const result = await markRemoteGithubStarsRead();
+			setWorkspace((current) => current ? {
+				...current,
+				entries: current.entries.map((entry) => current.providers.some((provider) => provider.id === entry.providerId && provider.kind === "github") ? { ...entry, isRead: true } : entry),
+			} : current);
+			setSyncNotice(`Marked ${result.markedRead.toLocaleString()} GitHub stars as read.`);
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : "Could not mark GitHub stars as read");
+		} finally {
+			setMarkingGithubRead(false);
+		}
+	};
+
+	const openApiTokenDialog = async () => {
+		setApiTokenDialogOpen(true);
+		setApiTokenError(null);
+		setApiTokenLoading(true);
+		try {
+			setApiTokens((await fetchRemoteApiTokens()).apiTokens);
+		} catch (cause) {
+			setApiTokenError(cause instanceof Error ? cause.message : "Could not load API tokens");
+		} finally {
+			setApiTokenLoading(false);
+		}
+	};
+
+	const createApiToken = async (event: FormEvent<HTMLFormElement>) => {
+		event.preventDefault();
+		const name = apiTokenName.trim();
+		if (!name) {
+			setApiTokenError("Enter a name for this token.");
+			return;
+		}
+		setApiTokenBusy("create");
+		setApiTokenError(null);
+		try {
+			const created = await createRemoteApiToken(name);
+			setApiTokens((current) => [created.apiToken, ...current].slice(0, 50));
+			setCreatedApiToken(created);
+			setApiTokenCopied(false);
+			setApiTokenName("");
+		} catch (cause) {
+			setApiTokenError(cause instanceof Error ? cause.message : "Could not create API token");
+		} finally {
+			setApiTokenBusy(null);
+		}
+	};
+
+	const revokeApiToken = async (tokenId: string) => {
+		setApiTokenBusy(tokenId);
+		setApiTokenError(null);
+		try {
+			const revoked = await revokeRemoteApiToken(tokenId);
+			setApiTokens((current) => current.map((token) => token.id === revoked.id ? { ...token, revokedAt: revoked.revokedAt } : token));
+		} catch (cause) {
+			setApiTokenError(cause instanceof Error ? cause.message : "Could not revoke API token");
+		} finally {
+			setApiTokenBusy(null);
+		}
+	};
+
+	const copyCreatedApiToken = async () => {
+		if (!createdApiToken) return;
+		try {
+			await navigator.clipboard.writeText(createdApiToken.token);
+			setApiTokenCopied(true);
+		} catch {
+			setApiTokenError("Clipboard access failed. Select and copy the token above.");
+		}
+	};
+
 	const createCollection = async (event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
 		if (!collectionName.trim()) {
@@ -388,6 +480,8 @@ function App() {
 	if (!workspace) return <WorkspaceLoading />;
 
 	const unreadCount = entries.filter((entry) => !entry.isRead).length;
+	const githubProviderIds = new Set(providers.filter((provider) => provider.kind === "github").map((provider) => provider.id));
+	const unreadGithubCount = entries.filter((entry) => !entry.isRead && githubProviderIds.has(entry.providerId)).length;
 	const pinnedCount = entries.filter((entry) => entry.isPinned).length;
 	const activeProvider = providers.find((provider) => provider.id === providerFilter);
 	const githubProvider = providers.find((provider) => provider.kind === "github");
@@ -504,6 +598,8 @@ function App() {
 						</div>
 						<div className="flex items-center gap-2">
 							<Button variant="outline" size="sm" className="hidden sm:inline-flex" onClick={() => { setDialogError(null); setSourceDialogOpen(true); }}><Plus className="size-4" /> Add source</Button>
+							<Button variant="ghost" size="icon" className="size-9 sm:hidden" aria-label="Agent API tokens" onClick={() => void openApiTokenDialog()}><KeyRound className="size-4" /></Button>
+							<Button variant="ghost" size="sm" className="hidden sm:inline-flex" onClick={() => void openApiTokenDialog()}><KeyRound className="size-4" /> Agent API</Button>
 							<Button variant="ghost" size="icon" className="size-9" aria-label="Sign out" onClick={() => void signOut()}><LogOut className="size-4" /></Button>
 							<Avatar className="size-8">
 								{me.account?.avatarUrl && <AvatarImage src={me.account.avatarUrl} alt="" />}
@@ -534,19 +630,35 @@ function App() {
 						)}
 
 						<div className="mt-8 flex flex-col gap-4 border-b pb-5 xl:flex-row xl:items-center xl:justify-between">
-							<Tabs value={view} onValueChange={handleViewChange}>
-								<TabsList variant="line">
-									<TabsTrigger value="all">All <span className="ml-1 text-xs text-muted-foreground">{entries.length}</span></TabsTrigger>
-									<TabsTrigger value="unread">Unread <span className="ml-1 text-xs text-muted-foreground">{unreadCount}</span></TabsTrigger>
-									<TabsTrigger value="pinned">Pinned <span className="ml-1 text-xs text-muted-foreground">{pinnedCount}</span></TabsTrigger>
-								</TabsList>
-							</Tabs>
+							<div className="flex flex-wrap items-center gap-3">
+								<Tabs value={view} onValueChange={handleViewChange}>
+									<TabsList variant="line">
+										<TabsTrigger value="all">All <span className="ml-1 text-xs text-muted-foreground">{entries.length}</span></TabsTrigger>
+										<TabsTrigger value="unread">Unread <span className="ml-1 text-xs text-muted-foreground">{unreadCount}</span></TabsTrigger>
+										<TabsTrigger value="pinned">Pinned <span className="ml-1 text-xs text-muted-foreground">{pinnedCount}</span></TabsTrigger>
+									</TabsList>
+								</Tabs>
+								{unreadGithubCount > 0 && <Button size="sm" variant="outline" onClick={() => void markAllGithubStarsAsRead()} disabled={markingGithubRead}>
+									{markingGithubRead ? <LoaderCircle className="size-4 animate-spin" /> : <Check className="size-4" />}
+									Mark GitHub stars read
+								</Button>}
+							</div>
 							<div className="grid w-full grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:justify-end xl:w-auto">
 								<div className="relative col-span-2 min-w-0 sm:w-64 sm:flex-1 xl:w-72 xl:flex-none">
 									<Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
 									<Input value={query} onChange={(event) => handleQueryChange(event.target.value)} placeholder="Search repositories and topics" aria-label="Search repositories" className="h-10 bg-card pl-9 pr-9" />
 									{query && <Button className="absolute right-1 top-1 size-8" variant="ghost" size="icon" aria-label="Clear search" onClick={() => handleQueryChange("")}><X className="size-4" /></Button>}
 								</div>
+								<DropdownMenu>
+									<DropdownMenuTrigger asChild>
+										<Button variant="outline" className="col-span-2 justify-start sm:col-span-1" disabled={visibleEntries.length === 0}><Download className="size-4" /> Export <span className="ml-auto text-xs text-muted-foreground">{visibleEntries.length.toLocaleString()}</span></Button>
+									</DropdownMenuTrigger>
+									<DropdownMenuContent align="end">
+										<DropdownMenuItem onSelect={() => downloadEntries(visibleEntries, "csv")}>CSV spreadsheet</DropdownMenuItem>
+										<DropdownMenuItem onSelect={() => downloadEntries(visibleEntries, "json")}><FileJson className="size-4" /> JSON</DropdownMenuItem>
+										<DropdownMenuItem onSelect={() => downloadEntries(visibleEntries, "md")}><FileText className="size-4" /> Markdown</DropdownMenuItem>
+									</DropdownMenuContent>
+								</DropdownMenu>
 								<select aria-label="Sort repositories" value={effectiveSort} onChange={(event) => handleSortChange(event.currentTarget.value)} className="h-10 min-w-0 rounded-md border border-input bg-card px-3 text-sm text-foreground shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring sm:w-40">
 									<option value="relevance">Best match</option>
 									<option value="most-stars">Most repo stars</option>
@@ -643,6 +755,56 @@ function App() {
 							<div className="flex gap-2"><Input value={tangledHandle} onChange={(event) => setTangledHandle(event.target.value)} placeholder="name.tangled.org" aria-label="Tangled handle" /><Button type="submit" disabled={connectingTangled}>{connectingTangled ? <LoaderCircle className="size-4 animate-spin" /> : "Add"}</Button></div>
 							{dialogError && <p className="text-sm text-destructive">{dialogError}</p>}
 						</form>
+					</div>
+				</DialogContent>
+			</Dialog>
+
+			<Dialog open={apiTokenDialogOpen} onOpenChange={(open) => {
+				setApiTokenDialogOpen(open);
+				if (!open) {
+					setCreatedApiToken(null);
+					setApiTokenCopied(false);
+					setApiTokenError(null);
+				}
+			}}>
+				<DialogContent className="max-h-[85svh] overflow-y-auto sm:max-w-xl">
+					<DialogHeader>
+						<DialogTitle>Agent API access</DialogTitle>
+						<DialogDescription>Create read-only tokens so agents can search and read your Starboard library.</DialogDescription>
+					</DialogHeader>
+					<div className="space-y-4">
+						<div className="rounded-lg border bg-muted/30 p-4 text-sm">
+							<p className="font-medium">API v1 · read only</p>
+							<p className="mt-1 text-muted-foreground">Tokens expire after one year. Store token in your agent’s secret settings. Each token is shown once and can be revoked here.</p>
+							<pre className="mt-3 overflow-x-auto rounded-md bg-background px-3 py-2 text-xs"><code>{`curl -H 'Authorization: Bearer $STARBOARD_API_TOKEN' \\\n  '${window.location.origin}/api/v1/entries?q=panda&sort=most-stars&minStars=100'`}</code></pre>
+						</div>
+						{createdApiToken && <div className="space-y-3 rounded-lg border border-primary/50 bg-primary/5 p-4" role="status">
+							<p className="text-sm font-medium">Copy this token now. Starboard won’t show it again.</p>
+							<code className="block max-h-24 overflow-auto break-all rounded-md bg-background p-3 font-mono text-xs">{createdApiToken.token}</code>
+							<Button size="sm" variant="outline" onClick={() => void copyCreatedApiToken()}>{apiTokenCopied ? <Check className="size-4" /> : <Copy className="size-4" />}{apiTokenCopied ? "Copied" : "Copy token"}</Button>
+						</div>}
+						<form className="flex flex-col gap-2 sm:flex-row" onSubmit={(event) => void createApiToken(event)}>
+							<Input value={apiTokenName} onChange={(event) => setApiTokenName(event.target.value)} placeholder="Token name, e.g. Claude Desktop" aria-label="API token name" maxLength={60} />
+							<Button type="submit" disabled={apiTokenBusy === "create"}>{apiTokenBusy === "create" && <LoaderCircle className="size-4 animate-spin" />}Create token</Button>
+						</form>
+						{apiTokenError && <p role="alert" className="text-sm text-destructive">{apiTokenError}</p>}
+						<div className="space-y-2">
+							<p className="text-sm font-medium">Your tokens</p>
+							{apiTokenLoading ? <p className="text-sm text-muted-foreground">Loading tokens…</p> : apiTokens.length === 0 ? <p className="text-sm text-muted-foreground">No API tokens yet.</p> : apiTokens.map((token) => {
+								const expired = Date.parse(token.expiresAt) <= Date.now();
+								const inactive = Boolean(token.revokedAt) || expired;
+								return <div key={token.id} className="flex items-center gap-3 rounded-lg border px-3 py-3">
+									<div className="min-w-0 flex-1">
+										<p className="truncate text-sm font-medium">{token.name}<span className="ml-2 text-xs font-normal text-muted-foreground">{inactive ? token.revokedAt ? "Revoked" : "Expired" : "Active"}</span></p>
+										<p className="mt-1 truncate font-mono text-xs text-muted-foreground">{token.prefix}</p>
+										<p className="mt-1 text-xs text-muted-foreground">Expires {formatDate(token.expiresAt)}{token.lastUsedAt ? ` · Used ${formatRelative(token.lastUsedAt)}` : " · Never used"}</p>
+									</div>
+									{!inactive && <Button variant="ghost" size="icon" aria-label={`Revoke ${token.name}`} disabled={apiTokenBusy === token.id} onClick={() => void revokeApiToken(token.id)}>
+										{apiTokenBusy === token.id ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+									</Button>}
+								</div>;
+							})}
+						</div>
 					</div>
 				</DialogContent>
 			</Dialog>

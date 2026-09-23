@@ -9,6 +9,9 @@ export const apiRoutes = {
 	search: "/api/search",
 	workspace: "/api/workspace",
 	me: "/api/me",
+	accountTokens: "/api/account/tokens",
+	markGithubStarsRead: "/api/entries/read-all",
+	agentApi: "/api/v1",
 	automations: "/api/automations",
 	plugins: "/api/plugins",
 	auth: {
@@ -51,6 +54,21 @@ export interface MeResponse {
 	authenticated: boolean;
 	providers: Provider[];
 	canConnectGithub: boolean;
+}
+
+export interface ApiTokenSummary {
+	id: string;
+	name: string;
+	prefix: string;
+	createdAt: string;
+	expiresAt: string;
+	lastUsedAt?: string;
+	revokedAt?: string;
+}
+
+export interface CreatedApiToken {
+	token: string;
+	apiToken: ApiTokenSummary;
 }
 
 export interface WorkspaceResponse {

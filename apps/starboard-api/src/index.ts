@@ -4,13 +4,15 @@ import { z } from "zod";
 import { connectTangledHandle, credentialForAccount, credentialForProvider, finishGithubOAuth, finishTangledOAuth, logout, sessionAccountIdForRequest, startGithubOAuth, startTangledOAuth } from "./auth";
 import { apiRoutes, type SearchRequest } from "../../starboard/src/lib/api-contract";
 import type { Automation, Collection, CollectionRule, Entry, JsonValue, PluginManifest, Provider, RepositoryMetadataResponse, SearchMode } from "../../starboard/src/lib/types";
-import { getEntry, getProvider, getSyncCheckpoint, insertCollection, listCollections, listEntries, listProviders, searchWorkspace, updateEntry, upsertProvider } from "./repository";
+import { getEntry, getProvider, getSyncCheckpoint, insertCollection, listCollections, listEntries, listProviders, markGithubEntriesRead, searchWorkspace, updateEntry, upsertProvider } from "./repository";
 import { isSyncPending, syncProvider } from "./sync";
 import { embedText } from "./embeddings";
 import { deleteAutomation, listAutomations, listPlugins, upsertAutomation, upsertPlugin } from "./automation";
 import type { WorkerEnv } from "./env";
 import { getRemoteProviderAdapter } from "./providers/registry";
 import { claimRepositoryMetadataRefresh, getRepositoryMetadataResponse, isRepositoryMetadataFresh, releaseRepositoryMetadataRefresh, saveRepositoryMetadataRefresh } from "./repository-metadata";
+import { accountIdForApiToken, ApiTokenLimitError, createAccountApiToken, listAccountApiTokens, revokeAccountApiToken } from "./api-tokens";
+import { agentApiDocumentation, handleAgentApi } from "./agent-api";
 
 const jsonHeaders = (request: Request): Headers => {
 	const headers = new Headers({
@@ -55,12 +57,28 @@ function withCors(response: Response, request: Request, env: WorkerEnv): Respons
 
 const requestId = () => crypto.randomUUID();
 
-function json<T>(request: Request, data: T, status = 200): Response {
-	return new Response(JSON.stringify({ data, requestId: requestId() }), { status, headers: jsonHeaders(request) });
+function json<T>(request: Request, data: T, status = 200, extraHeaders?: HeadersInit): Response {
+	const headers = jsonHeaders(request);
+	new Headers(extraHeaders).forEach((value, name) => headers.set(name, value));
+	return new Response(JSON.stringify({ data, requestId: requestId() }), { status, headers });
 }
 
 function failure(request: Request, message: string, status: number): Response {
 	return json(request, { error: message }, status);
+}
+
+function bearerUnauthorized(request: Request): Response {
+	const response = failure(request, "A valid Starboard API token is required", 401);
+	const headers = new Headers(response.headers);
+	headers.set("www-authenticate", 'Bearer realm="Starboard API"');
+	headers.set("cache-control", "private, no-store");
+	return new Response(response.body, { status: response.status, headers });
+}
+
+function privateResponse(response: Response): Response {
+	const headers = new Headers(response.headers);
+	headers.set("cache-control", "private, no-store");
+	return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
 function modeFrom(value: string | null): SearchMode {
@@ -70,6 +88,15 @@ function modeFrom(value: string | null): SearchMode {
 function limitFrom(value: string | null): number {
 	const parsed = Number(value ?? 50);
 	return Number.isFinite(parsed) ? Math.max(1, Math.min(Math.floor(parsed), 100)) : 50;
+}
+
+const apiTokenCreateSchema = z.object({ name: z.string().trim().min(1).max(60) }).strict();
+
+function mutationOriginAllowed(request: Request, env: WorkerEnv): boolean {
+	const origin = request.headers.get("origin");
+	if (!origin) return true;
+	const allowedOrigins = new Set([new URL(request.url).origin, configuredOrigin(env.APP_URL), configuredOrigin(env.WEB_APP_URL)].filter((value): value is string => Boolean(value)));
+	return allowedOrigins.has(origin);
 }
 
 function isAutomationTrigger(value: unknown): value is Automation["trigger"] {
@@ -302,6 +329,32 @@ async function handleApi(request: Request, env: WorkerEnv, accountId?: string): 
 		return json(request, { account: account ? { ...account, avatarUrl: account.avatarUrl ?? undefined } : null, authenticated: Boolean(account), providers: account ? await listProviders(env.DB, accountId) : [], canConnectGithub: Boolean(env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET && env.SESSION_SECRET) });
 	}
 	if (!accountId) return failure(request, "Authentication required", 401);
+	if (url.pathname === apiRoutes.accountTokens && request.method === "GET") {
+		return json(request, { apiTokens: await listAccountApiTokens(env.DB, accountId) }, 200, { "cache-control": "no-store" });
+	}
+	if (url.pathname === apiRoutes.accountTokens && request.method === "POST") {
+		if (!mutationOriginAllowed(request, env)) return failure(request, "Request origin is not allowed", 403);
+		const body = await request.json().catch(() => undefined);
+		const parsedBody = apiTokenCreateSchema.safeParse(body);
+		if (!parsedBody.success) return failure(request, "Token name must be between 1 and 60 characters", 400);
+		try {
+			return json(request, await createAccountApiToken(env.DB, accountId, parsedBody.data.name), 201, { "cache-control": "no-store" });
+		} catch (error) {
+			if (error instanceof ApiTokenLimitError) return failure(request, error.message, 409);
+			throw error;
+		}
+	}
+	const apiTokenMatch = url.pathname.match(/^\/api\/account\/tokens\/([^/]+)$/);
+	if (apiTokenMatch?.[1] && request.method === "DELETE") {
+		if (!mutationOriginAllowed(request, env)) return failure(request, "Request origin is not allowed", 403);
+		const id = decodeURIComponent(apiTokenMatch[1]);
+		const revokedAt = await revokeAccountApiToken(env.DB, accountId, id);
+		return revokedAt ? json(request, { id, revokedAt }, 200, { "cache-control": "no-store" }) : failure(request, "API token not found", 404);
+	}
+	if (url.pathname === apiRoutes.markGithubStarsRead && request.method === "POST") {
+		if (!mutationOriginAllowed(request, env)) return failure(request, "Request origin is not allowed", 403);
+		return json(request, { markedRead: await markGithubEntriesRead(env.DB, accountId) });
+	}
 	if (url.pathname === apiRoutes.workspace && request.method === "GET") {
 		const providers = await listProviders(env.DB, accountId);
 		const providersWithSyncState = await Promise.all(providers.map(async (provider) => ({
@@ -502,6 +555,24 @@ export default {
 		if (url.pathname === apiRoutes.auth.tangledStart && request.method === "GET") return withCors(await startTangledOAuth(env, request), request, env);
 		if (url.pathname === apiRoutes.auth.tangledCallback && request.method === "GET") return withCors(await finishTangledOAuth(env, request), request, env);
 		if (url.pathname === apiRoutes.auth.logout && request.method === "POST") return withCors(await logout(env, request), request, env);
+		const isAgentApiPath = url.pathname === apiRoutes.agentApi || url.pathname.startsWith(`${apiRoutes.agentApi}/`);
+		if (isAgentApiPath && request.method === "OPTIONS") return withCors(new Response(null, { status: 204, headers: jsonHeaders(request) }), request, env);
+		if (url.pathname === apiRoutes.agentApi && request.method === "GET") return withCors(json(request, agentApiDocumentation), request, env);
+		if (isAgentApiPath) {
+			const tokenAccountId = await accountIdForApiToken(env.DB, request.headers.get("authorization"));
+			if (!tokenAccountId) return withCors(bearerUnauthorized(request), request, env);
+			try {
+				const result = await handleAgentApi(request, env, tokenAccountId);
+				if ("error" in result) {
+					const response = privateResponse(failure(request, result.error, result.status));
+					if (result.status === 405) response.headers.set("allow", "GET, OPTIONS");
+					return withCors(response, request, env);
+				}
+				return withCors(privateResponse(json(request, result.data, result.status)), request, env);
+			} catch {
+				return withCors(privateResponse(failure(request, "Starboard Agent API could not complete the request", 500)), request, env);
+			}
+		}
 		const accountId = await sessionAccountIdForRequest(env, request);
 		const publicApiPath = url.pathname === apiRoutes.health || url.pathname === apiRoutes.me;
 		if (url.pathname.startsWith("/api/") && !publicApiPath && request.method !== "OPTIONS" && !accountId) {

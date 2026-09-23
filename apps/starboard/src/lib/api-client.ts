@@ -1,4 +1,4 @@
-import { apiRoutes, type EntryMetadataResponse, type MeResponse, type SyncResponse, type WorkspaceResponse } from "./api-contract";
+import { apiRoutes, type ApiTokenSummary, type CreatedApiToken, type EntryMetadataResponse, type MeResponse, type SyncResponse, type WorkspaceResponse } from "./api-contract";
 import type { Collection, Entry, Provider } from "./types";
 
 export interface SyncProgress {
@@ -14,7 +14,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 	const response = await fetch(remoteUrl(path), {
 		...init,
 		credentials: "include",
-		headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
+		headers: { "content-type": "application/json", ...init?.headers },
 	});
 	const payload = await response.json().catch(() => undefined) as { data?: unknown; error?: unknown } | undefined;
 	if (!response.ok) {
@@ -37,6 +37,22 @@ export async function fetchRemoteWorkspace(): Promise<WorkspaceResponse> {
 
 export async function patchRemoteEntry(id: string, patch: Partial<Pick<Entry, "isRead" | "isPinned" | "tags">>): Promise<Entry> {
 	return (await request<{ entry: Entry }>(`${apiRoutes.entries}/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) })).entry;
+}
+
+export async function markRemoteGithubStarsRead(): Promise<{ markedRead: number }> {
+	return request(apiRoutes.markGithubStarsRead, { method: "POST" });
+}
+
+export async function fetchRemoteApiTokens(): Promise<{ apiTokens: ApiTokenSummary[] }> {
+	return request(apiRoutes.accountTokens);
+}
+
+export async function createRemoteApiToken(name: string): Promise<CreatedApiToken> {
+	return request(apiRoutes.accountTokens, { method: "POST", body: JSON.stringify({ name }) });
+}
+
+export async function revokeRemoteApiToken(id: string): Promise<{ id: string; revokedAt: string }> {
+	return request(`${apiRoutes.accountTokens}/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export async function fetchRemoteEntryMetadata(id: string): Promise<EntryMetadataResponse> {

@@ -136,15 +136,18 @@ const entryFromRow = (row: EntryRow): Entry => {
 	};
 };
 
-const selectEntriesWithSharedMetadata = `
-	SELECT entries.*, repository_metadata.metadata_json AS shared_metadata_json
-	FROM entries
+const sharedMetadataJoin = `
 	LEFT JOIN providers ON providers.id = entries.provider_id AND providers.account_id = entries.account_id
 	LEFT JOIN repository_metadata ON providers.kind = 'github'
 		AND repository_metadata.external_id = entries.external_id
 		AND repository_metadata.is_public = 1
 		AND repository_metadata.metadata_json IS NOT NULL
 		AND julianday(repository_metadata.metadata_fetched_at) > julianday('now', '-1 day')`;
+
+const selectEntriesWithSharedMetadata = `
+	SELECT entries.*, repository_metadata.metadata_json AS shared_metadata_json
+	FROM entries
+	${sharedMetadataJoin}`;
 
 const collectionFromRow = (row: CollectionRow): Collection => ({
 	id: row.id,
@@ -196,6 +199,77 @@ export async function listEntries(db: D1Database, accountId: string): Promise<En
 	return result.results.map(entryFromRow);
 }
 
+export interface AgentEntryFilters {
+	query?: string;
+	providerId?: string;
+	view?: "all" | "unread" | "pinned";
+	language?: string;
+	minStars?: number;
+	sort: "most-stars" | "recently-pushed" | "recently-starred" | "name";
+	limit: number;
+	offset: number;
+}
+
+export interface AgentEntryPage {
+	entries: Entry[];
+	total: number;
+}
+
+const selectAgentEntryColumns = `
+	SELECT entries.id, entries.provider_id, entries.schema_id, entries.kind, entries.title, entries.summary, entries.url,
+		entries.author, entries.author_handle, entries.tags_json, entries.starred_at, entries.updated_at, entries.synced_at,
+		entries.is_read, entries.is_pinned, entries.language, entries.language_color, entries.stars, entries.forks,
+		entries.comments, entries.external_id, entries.fields_json, repository_metadata.metadata_json AS shared_metadata_json
+	FROM entries ${sharedMetadataJoin}`;
+
+export async function listAgentEntries(db: D1Database, accountId: string, filters: AgentEntryFilters): Promise<AgentEntryPage> {
+	const conditions = ["entries.account_id = ?"];
+	const bindings: Array<string | number> = [accountId];
+	const metadata = "CASE WHEN json_valid(repository_metadata.metadata_json) THEN repository_metadata.metadata_json END";
+	const metadataStars = `COALESCE(json_extract(${metadata}, '$.stars'), entries.stars)`;
+
+	if (filters.providerId) {
+		conditions.push("entries.provider_id = ?");
+		bindings.push(filters.providerId);
+	}
+	if (filters.view === "unread") conditions.push("entries.is_read = 0");
+	if (filters.view === "pinned") conditions.push("entries.is_pinned = 1");
+	if (filters.language) {
+		conditions.push(`COALESCE(json_extract(${metadata}, '$.language'), entries.language) = ?`);
+		bindings.push(filters.language);
+	}
+	if (filters.minStars !== undefined) {
+		conditions.push(`${metadataStars} >= ?`);
+		bindings.push(filters.minStars);
+	}
+	if (filters.query) {
+		const escapedQuery = `%${filters.query.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
+		const searchableFields = ["repository_metadata.metadata_json", "entries.title", "entries.summary", "entries.author", "entries.author_handle", "entries.tags_json", "entries.fields_json"];
+		conditions.push(`(${searchableFields.map((field) => `${field} LIKE ? ESCAPE '\\'`).join(" OR ")})`);
+		bindings.push(...searchableFields.map(() => escapedQuery));
+	}
+
+	const whereClause = conditions.join(" AND ");
+	const fromClause = `FROM entries ${sharedMetadataJoin}`;
+	const totalRow = await db.prepare(`SELECT COUNT(*) AS total ${fromClause} WHERE ${whereClause}`).bind(...bindings).first<{ total: number }>();
+	const orderBy = {
+		"most-stars": `${metadataStars} IS NULL ASC, ${metadataStars} DESC, entries.starred_at DESC`,
+		"recently-pushed": `COALESCE(json_extract(${metadata}, '$.pushedAt'), json_extract(CASE WHEN json_valid(entries.fields_json) THEN entries.fields_json END, '$.pushedAt')) IS NULL ASC, COALESCE(json_extract(${metadata}, '$.pushedAt'), json_extract(CASE WHEN json_valid(entries.fields_json) THEN entries.fields_json END, '$.pushedAt')) DESC, entries.starred_at DESC`,
+		"recently-starred": "entries.starred_at DESC",
+		name: `COALESCE(json_extract(${metadata}, '$.title'), entries.title) COLLATE NOCASE ASC, entries.starred_at DESC`,
+	}[filters.sort];
+	const entryRows = await db.prepare(
+		`${selectAgentEntryColumns} WHERE ${whereClause} ORDER BY ${orderBy} LIMIT ? OFFSET ?`,
+	).bind(...bindings, filters.limit, filters.offset).all<EntryRow>();
+	return { entries: entryRows.results.map(entryFromRow), total: totalRow?.total ?? 0 };
+}
+
+export async function getAgentEntry(db: D1Database, accountId: string, id: string): Promise<Entry | undefined> {
+	const row = await db.prepare(`${selectAgentEntryColumns} WHERE entries.account_id = ?1 AND entries.id = ?2 LIMIT 1`)
+		.bind(accountId, id).first<EntryRow>();
+	return row ? entryFromRow(row) : undefined;
+}
+
 export async function listCollections(db: D1Database, accountId: string): Promise<Collection[]> {
 	const accountCollections = defaultCollections.map((collection) => ({
 		...collection,
@@ -209,6 +283,11 @@ export async function listCollections(db: D1Database, accountId: string): Promis
 		`INSERT OR IGNORE INTO collections (id, account_id, name, description, icon, color, rule_json, built_in)
 		 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
 	).bind(collection.id, accountId, collection.name, collection.description, collection.icon, collection.color, JSON.stringify(collection.rule), collection.builtIn ? 1 : 0)));
+	const result = await db.prepare("SELECT * FROM collections WHERE account_id = ?1 ORDER BY built_in DESC, name ASC").bind(accountId).all<CollectionRow>();
+	return result.results.map(collectionFromRow);
+}
+
+export async function listCollectionsReadOnly(db: D1Database, accountId: string): Promise<Collection[]> {
 	const result = await db.prepare("SELECT * FROM collections WHERE account_id = ?1 ORDER BY built_in DESC, name ASC").bind(accountId).all<CollectionRow>();
 	return result.results.map(collectionFromRow);
 }
@@ -252,6 +331,15 @@ export async function updateEntry(
 		 WHERE account_id = ?7 AND id = ?8`,
 	).bind(JSON.stringify(next.tags), next.isRead ? 1 : 0, next.isPinned ? 1 : 0, next.updatedAt, next.embedding ? JSON.stringify(next.embedding) : null, next.classification ? JSON.stringify(next.classification) : null, accountId, id).run();
 	return next;
+}
+
+export async function markGithubEntriesRead(db: D1Database, accountId: string): Promise<number> {
+	const result = await db.prepare(
+		`UPDATE entries SET is_read = 1
+		 WHERE account_id = ?1 AND is_read = 0
+		 AND provider_id IN (SELECT id FROM providers WHERE account_id = ?1 AND kind = 'github')`,
+	).bind(accountId).run();
+	return result.meta.changes;
 }
 
 export async function insertCollection(db: D1Database, accountId: string, collection: Collection): Promise<Collection> {
