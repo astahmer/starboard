@@ -80,3 +80,8 @@ pnpm api:typecheck
 See `apps/starboard/README.md`, `apps/starboard-api/README.md`, and
 `plans/collections-and-organization.md` for the detailed contracts and
 product plan.
+
+
+---
+
+https://github.com/settings/apps/starboard-by-astahmer

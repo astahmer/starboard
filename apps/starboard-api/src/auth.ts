@@ -256,8 +256,16 @@ export async function finishGithubOAuth(env: WorkerEnv, request: Request): Promi
 	});
 	const token = await tokenResponse.json() as GitHubTokenResponse;
 	if (!tokenResponse.ok || !token.access_token) return redirectWithError(request, stored.returnTo, token.error ?? "GitHub token exchange failed");
-	const userResponse = await fetch(`${(env.GITHUB_API_URL || "https://api.github.com").replace(/\/$/, "")}/user`, { headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${token.access_token}`, "X-GitHub-Api-Version": "2026-03-10" } });
-	if (!userResponse.ok) return redirectWithError(request, stored.returnTo, "GitHub identity check failed");
+	const apiBase = (env.GITHUB_API_URL || "https://api.github.com").replace(/\/$/, "");
+	const userResponse = await fetch(`${apiBase}/user`, {
+		headers: {
+			Accept: "application/vnd.github+json",
+			Authorization: `Bearer ${token.access_token}`,
+			"User-Agent": "Starboard",
+			"X-GitHub-Api-Version": "2026-03-10",
+		},
+	});
+	if (!userResponse.ok) return redirectWithError(request, stored.returnTo, `GitHub identity check failed (HTTP ${userResponse.status})`);
 	const user = await userResponse.json() as GitHubUser;
 	if (!Number.isSafeInteger(user.id) || !user.login?.trim()) return redirectWithError(request, stored.returnTo, "GitHub returned an invalid user identity");
 	const accountId = `github-${user.id}`;
