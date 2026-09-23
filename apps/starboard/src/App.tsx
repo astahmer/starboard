@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useLocation, useNavigate } from "@tanstack/react-router";
+import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import {
 	ArrowDownToLine,
 	ArrowUpRight,
@@ -145,6 +146,7 @@ function App() {
 	const navigate = useNavigate();
 	const workspaceRoute = useMemo(() => workspaceRouteFromPathname(location.pathname), [location.pathname]);
 	const query = location.search.q ?? "";
+	const deferredQuery = useDeferredValue(query);
 	const view = location.search.view ?? "all";
 	const providerFilter = workspaceRoute.kind === "provider" ? workspaceRoute.providerId : "all";
 	const collectionFilter = workspaceRoute.kind === "collection" ? workspaceRoute.collectionId : null;
@@ -217,9 +219,9 @@ function App() {
 		if (view === "unread") results = results.filter((entry) => !entry.isRead);
 		if (view === "pinned") results = results.filter((entry) => entry.isPinned);
 		if (selectedCollection) results = results.filter((entry) => collectionMatches(entry, selectedCollection));
-		if (query.trim()) return searchEntries(results, query, "hybrid");
+		if (deferredQuery.trim()) return searchEntries(results, deferredQuery, "hybrid");
 		return [...results].sort((first, second) => Date.parse(second.starredAt) - Date.parse(first.starredAt));
-	}, [workspace, providerFilter, view, selectedCollection, query]);
+	}, [workspace, providerFilter, view, selectedCollection, deferredQuery]);
 
 	useEffect(() => {
 		if (visibleEntries.length === 0) {
@@ -509,9 +511,7 @@ function App() {
 										{entries.length === 0 && githubProvider && <Button className="mt-5" onClick={() => void synchronize(githubProvider)} disabled={Boolean(syncingProviderId)}><RefreshCw className="size-4" /> Sync your stars</Button>}
 									</div>
 								) : (
-									<div className="divide-y">
-										{visibleEntries.map((entry) => <RepositoryRow key={entry.id} entry={entry} selected={entry.id === selectedEntryId} saving={savingEntryId === entry.id} onSelect={() => handleSelectEntry(entry.id)} onTogglePinned={() => void updateEntry(entry, { isPinned: !entry.isPinned })} />)}
-									</div>
+									<VirtualizedRepositoryList entries={visibleEntries} selectedEntryId={selectedEntryId} savingEntryId={savingEntryId} onSelectEntry={handleSelectEntry} onTogglePinned={(entry) => void updateEntry(entry, { isPinned: !entry.isPinned })} />
 								)}
 								{lastSyncedAt && <p className="mt-5 flex items-center gap-2 text-xs text-muted-foreground"><Clock3 className="size-3.5" /> Last synced {formatRelative(lastSyncedAt)}</p>}
 							</section>
@@ -603,6 +603,74 @@ function RepositoryRow({ entry, selected, saving, onSelect, onTogglePinned }: { 
 				<Button variant="ghost" size="icon" className="size-7" aria-label={entry.isPinned ? "Unpin repository" : "Pin repository"} aria-pressed={entry.isPinned} onClick={onTogglePinned} disabled={saving}>
 					{entry.isPinned ? <BookmarkCheck className="size-4 text-primary" /> : <Bookmark className="size-4" />}
 				</Button>
+			</div>
+		</div>
+	);
+}
+
+type VirtualizedRepositoryListProps = {
+	entries: Entry[];
+	selectedEntryId: string | null;
+	savingEntryId: string | null;
+	onSelectEntry: (entryId: string) => void;
+	onTogglePinned: (entry: Entry) => void;
+};
+
+function VirtualizedRepositoryList({ entries, selectedEntryId, savingEntryId, onSelectEntry, onTogglePinned }: VirtualizedRepositoryListProps) {
+	const listRef = useRef<HTMLDivElement>(null);
+	const [scrollMargin, setScrollMargin] = useState(0);
+	const updateScrollMargin = useCallback(() => {
+		const list = listRef.current;
+		if (!list) return;
+		const nextScrollMargin = list.getBoundingClientRect().top + window.scrollY;
+		setScrollMargin((current) => current === nextScrollMargin ? current : nextScrollMargin);
+	}, []);
+	const virtualizer = useWindowVirtualizer({
+		count: entries.length,
+		estimateSize: () => 144,
+		getItemKey: (index) => entries[index]?.id ?? index,
+		overscan: 8,
+		scrollMargin,
+		directDomUpdates: true,
+		useFlushSync: false,
+	});
+
+	useLayoutEffect(() => {
+		updateScrollMargin();
+	});
+
+	useEffect(() => {
+		window.addEventListener("resize", updateScrollMargin);
+		return () => window.removeEventListener("resize", updateScrollMargin);
+	}, [updateScrollMargin]);
+
+	return (
+		<div ref={listRef}>
+			<div ref={virtualizer.containerRef} role="list" aria-label="Repository results" className="relative w-full">
+				{virtualizer.getVirtualItems().map((virtualRow) => {
+					const entry = entries[virtualRow.index];
+					if (!entry) return null;
+					return (
+						<div
+							key={virtualRow.key}
+							ref={virtualizer.measureElement}
+							data-index={virtualRow.index}
+							role="listitem"
+							aria-setsize={entries.length}
+							aria-posinset={virtualRow.index + 1}
+							className={virtualRow.index < entries.length - 1 ? "border-b" : ""}
+							style={{ position: "absolute", top: 0, left: 0, width: "100%" }}
+						>
+							<RepositoryRow
+								entry={entry}
+								selected={entry.id === selectedEntryId}
+								saving={savingEntryId === entry.id}
+								onSelect={() => onSelectEntry(entry.id)}
+								onTogglePinned={() => onTogglePinned(entry)}
+							/>
+						</div>
+					);
+				})}
 			</div>
 		</div>
 	);
