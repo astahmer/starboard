@@ -38,20 +38,52 @@ export function fuzzyScore(query: string, candidate: string): number {
 		return 0.78 + Math.max(0, 0.22 - start / 500);
 	}
 
-	let queryIndex = 0;
-	let score = 0;
-	let previousMatch = -2;
-	for (let index = 0; index < normalizedCandidate.length && queryIndex < normalizedQuery.length; index += 1) {
-		if (normalizedCandidate[index] !== normalizedQuery[queryIndex]) continue;
-		const boundary = index === 0 || /[\s/_-]/.test(normalizedCandidate[index - 1] ?? "");
-		const consecutive = index === previousMatch + 1;
-		score += boundary ? 1.8 : consecutive ? 1.35 : 1;
-		previousMatch = index;
-		queryIndex += 1;
-	}
-	if (queryIndex !== normalizedQuery.length) return 0;
-	return Math.min(0.92, (score / (normalizedQuery.length * 1.8)) * 0.92);
+	const queryTokens = tokenize(normalizedQuery);
+	const candidateTokens = tokenize(normalizedCandidate);
+	if (queryTokens.length === 0 || candidateTokens.length === 0) return 0;
+
+	const tokenScores = queryTokens.map((queryToken) => Math.max(0, ...candidateTokens.map((candidateToken) => {
+		if (candidateToken === queryToken) return 1;
+		if (candidateToken.startsWith(queryToken)) return 0.9;
+		if (candidateToken.includes(queryToken)) return 0.82;
+		if (queryToken.length < 3) return 0;
+
+		const maximumDistance = queryToken.length <= 5 ? 1 : Math.floor(queryToken.length * 0.2);
+		if (Math.abs(candidateToken.length - queryToken.length) > maximumDistance) {
+			return subsequenceScore(queryToken, candidateToken);
+		}
+
+		const previousRow = Array.from({ length: candidateToken.length + 1 }, (_, index) => index);
+		let currentRow = previousRow;
+		for (let queryIndex = 1; queryIndex <= queryToken.length; queryIndex += 1) {
+			currentRow = [queryIndex];
+			for (let candidateIndex = 1; candidateIndex <= candidateToken.length; candidateIndex += 1) {
+				const substitutionCost = queryToken[queryIndex - 1] === candidateToken[candidateIndex - 1] ? 0 : 1;
+				const deletion = (previousRow[candidateIndex] ?? Number.POSITIVE_INFINITY) + 1;
+				const insertion = (currentRow[candidateIndex - 1] ?? Number.POSITIVE_INFINITY) + 1;
+				const substitution = (previousRow[candidateIndex - 1] ?? Number.POSITIVE_INFINITY) + substitutionCost;
+				currentRow[candidateIndex] = Math.min(deletion, insertion, substitution);
+			}
+			previousRow.splice(0, previousRow.length, ...currentRow);
+		}
+		const distance = currentRow[candidateToken.length] ?? Number.POSITIVE_INFINITY;
+		if (distance <= maximumDistance) return 0.72 * (1 - distance / Math.max(queryToken.length, candidateToken.length));
+		return subsequenceScore(queryToken, candidateToken);
+	})));
+	if (tokenScores.some((score) => score === 0)) return 0;
+	return Math.min(0.92, tokenScores.reduce((total, score) => total + score, 0) / tokenScores.length * 0.92);
 }
+
+const subsequenceScore = (queryToken: string, candidateToken: string): number => {
+	if (queryToken.length < 3 || candidateToken.length > queryToken.length * 2) return 0;
+	let queryIndex = 0;
+	for (const character of candidateToken) {
+		if (character === queryToken[queryIndex]) queryIndex += 1;
+		if (queryIndex === queryToken.length) break;
+	}
+	if (queryIndex !== queryToken.length) return 0;
+	return 0.62 * (queryToken.length / candidateToken.length);
+};
 
 export function semanticScore(query: string, entry: Entry): number {
 	const queryTokens = tokenize(query);
@@ -119,7 +151,7 @@ export function searchEntries(entries: Entry[], query: string, mode: SearchMode,
 			const score = mode === "fuzzy" ? fuzzy : mode === "semantic" ? semantic : fuzzy * 0.55 + semantic * 0.45;
 			return { entry, score };
 		})
-		.filter(({ score }) => score > (mode === "semantic" ? 0.08 : 0.1))
+		.filter(({ score }) => score > (mode === "semantic" ? 0.08 : mode === "fuzzy" ? 0.45 : 0.25))
 		.sort((left, right) => right.score - left.score || Number(right.entry.isPinned) - Number(left.entry.isPinned))
 		.map(({ entry }) => entry);
 }

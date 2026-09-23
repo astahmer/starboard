@@ -41,6 +41,7 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { z } from "zod";
 import { connectRemoteTangled, createRemoteCollection, fetchRemoteEntryMetadata, fetchRemoteMe, fetchRemoteWorkspace, logoutRemote, patchRemoteEntry, providerAuthUrl, syncRemoteProvider } from "@/lib/api-client";
 import type { EntryMetadataResponse, MeResponse, WorkspaceResponse } from "@/lib/api-contract";
 import { collectionMatches, searchEntries } from "@/lib/search";
@@ -49,6 +50,33 @@ import { cn, formatDate, formatNumber, formatRelative, initials, slugify } from 
 import { entryViewSchema, workspaceRouteFromPathname, type WorkspaceRoute, type WorkspaceSearch } from "@/lib/workspace-route-state";
 
 const countEntriesForProvider = (entries: Entry[], providerId: string): number => entries.filter((entry) => entry.providerId === providerId).length;
+const repositorySortSchema = z.enum(["relevance", "most-stars", "recently-pushed", "recently-starred", "name"]);
+const minimumStarsSchema = z.enum(["all", "10", "100", "1000", "10000"]);
+
+type RepositorySort = z.infer<typeof repositorySortSchema>;
+
+const pushedAtTimestamp = (entry: Entry): number => {
+	const pushedAt = entry.fields?.pushedAt;
+	const timestamp = Date.parse(typeof pushedAt === "string" ? pushedAt : entry.updatedAt);
+	return Number.isFinite(timestamp) ? timestamp : Number.NEGATIVE_INFINITY;
+};
+
+const sortRepositoryEntries = ({ entries, sort, hasQuery }: { entries: Entry[]; sort: RepositorySort; hasQuery: boolean }): Entry[] => {
+	if (sort === "relevance" && hasQuery) return entries;
+	return [...entries].sort((left, right) => {
+		const pinnedOrder = Number(right.isPinned) - Number(left.isPinned);
+		const recentlyStarredOrder = right.starredAt.localeCompare(left.starredAt);
+		if (sort === "most-stars") return (right.stars ?? -1) - (left.stars ?? -1) || pinnedOrder || recentlyStarredOrder;
+		if (sort === "recently-pushed") {
+			const leftTimestamp = pushedAtTimestamp(left);
+			const rightTimestamp = pushedAtTimestamp(right);
+			if (leftTimestamp !== rightTimestamp) return rightTimestamp > leftTimestamp ? 1 : -1;
+			return pinnedOrder || recentlyStarredOrder;
+		}
+		if (sort === "name") return left.title.localeCompare(right.title, undefined, { sensitivity: "base" }) || pinnedOrder || recentlyStarredOrder;
+		return pinnedOrder || recentlyStarredOrder;
+	});
+};
 
 function WorkspaceLoading() {
 	return (
@@ -160,6 +188,9 @@ function App() {
 	const [syncProgress, setSyncProgress] = useState(0);
 	const [syncNotice, setSyncNotice] = useState<string | null>(null);
 	const [savingEntryId, setSavingEntryId] = useState<string | null>(null);
+	const [sortSelection, setSortSelection] = useState<RepositorySort | null>(null);
+	const [languageFilter, setLanguageFilter] = useState("all");
+	const [minimumStars, setMinimumStars] = useState<z.infer<typeof minimumStarsSchema>>("all");
 	const [collectionDialogOpen, setCollectionDialogOpen] = useState(false);
 	const [sourceDialogOpen, setSourceDialogOpen] = useState(false);
 	const [collectionName, setCollectionName] = useState("");
@@ -211,6 +242,11 @@ function App() {
 	const customCollections = collections.filter((collection) => !collection.builtIn);
 	const selectedCollection = collectionFilter ? collections.find((collection) => collection.id === collectionFilter) : undefined;
 	const selectedEntry = selectedEntryId ? entries.find((entry) => entry.id === selectedEntryId) : undefined;
+	const hasSearchQuery = Boolean(deferredQuery.trim());
+	const selectedSort = sortSelection ?? (hasSearchQuery ? "relevance" : "recently-starred");
+	const effectiveSort = selectedSort === "relevance" && !hasSearchQuery ? "recently-starred" : selectedSort;
+	const languageOptions = useMemo(() => Array.from(new Set(entries.map((entry) => entry.language).filter((language): language is string => Boolean(language)))).sort((left, right) => left.localeCompare(right)), [entries]);
+	const hasRepositoryFilters = languageFilter !== "all" || minimumStars !== "all";
 
 	const visibleEntries = useMemo(() => {
 		if (!workspace) return [];
@@ -219,9 +255,11 @@ function App() {
 		if (view === "unread") results = results.filter((entry) => !entry.isRead);
 		if (view === "pinned") results = results.filter((entry) => entry.isPinned);
 		if (selectedCollection) results = results.filter((entry) => collectionMatches(entry, selectedCollection));
-		if (deferredQuery.trim()) return searchEntries(results, deferredQuery, "hybrid");
-		return [...results].sort((first, second) => Date.parse(second.starredAt) - Date.parse(first.starredAt));
-	}, [workspace, providerFilter, view, selectedCollection, deferredQuery]);
+		if (languageFilter !== "all") results = results.filter((entry) => entry.language === languageFilter);
+		if (minimumStars !== "all") results = results.filter((entry) => typeof entry.stars === "number" && entry.stars >= Number(minimumStars));
+		const matches = hasSearchQuery ? searchEntries(results, deferredQuery, "hybrid") : results;
+		return sortRepositoryEntries({ entries: matches, sort: effectiveSort, hasQuery: hasSearchQuery });
+	}, [workspace, providerFilter, view, selectedCollection, deferredQuery, languageFilter, minimumStars, hasSearchQuery, effectiveSort]);
 
 	useEffect(() => {
 		if (visibleEntries.length === 0) {
@@ -381,6 +419,25 @@ function App() {
 		navigateWorkspace(workspaceRoute, { q: nextQuery || undefined }, true);
 	};
 
+	const handleSortChange = (value: string) => {
+		const parsedSort = repositorySortSchema.safeParse(value);
+		if (parsedSort.success) setSortSelection(parsedSort.data);
+	};
+
+	const handleMinimumStarsChange = (value: string) => {
+		const parsedMinimumStars = minimumStarsSchema.safeParse(value);
+		if (parsedMinimumStars.success) setMinimumStars(parsedMinimumStars.data);
+	};
+
+	const handleLanguageFilterChange = (value: string) => {
+		if (value === "all" || languageOptions.includes(value)) setLanguageFilter(value);
+	};
+
+	const clearRepositoryFilters = () => {
+		setLanguageFilter("all");
+		setMinimumStars("all");
+	};
+
 	const handleSelectEntry = (entryId: string) => {
 		navigateWorkspace(workspaceRoute, { entry: entryId }, false, false);
 	};
@@ -476,7 +533,7 @@ function App() {
 							</div>
 						)}
 
-						<div className="mt-8 flex flex-col gap-4 border-b pb-5 md:flex-row md:items-center md:justify-between">
+						<div className="mt-8 flex flex-col gap-4 border-b pb-5 xl:flex-row xl:items-center xl:justify-between">
 							<Tabs value={view} onValueChange={handleViewChange}>
 								<TabsList variant="line">
 									<TabsTrigger value="all">All <span className="ml-1 text-xs text-muted-foreground">{entries.length}</span></TabsTrigger>
@@ -484,10 +541,31 @@ function App() {
 									<TabsTrigger value="pinned">Pinned <span className="ml-1 text-xs text-muted-foreground">{pinnedCount}</span></TabsTrigger>
 								</TabsList>
 							</Tabs>
-							<div className="relative w-full md:max-w-sm">
-								<Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-								<Input value={query} onChange={(event) => handleQueryChange(event.target.value)} placeholder="Search repositories and topics" aria-label="Search repositories" className="h-10 bg-card pl-9 pr-9" />
-								{query && <Button className="absolute right-1 top-1 size-8" variant="ghost" size="icon" aria-label="Clear search" onClick={() => handleQueryChange("")}><X className="size-4" /></Button>}
+							<div className="grid w-full grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:justify-end xl:w-auto">
+								<div className="relative col-span-2 min-w-0 sm:w-64 sm:flex-1 xl:w-72 xl:flex-none">
+									<Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+									<Input value={query} onChange={(event) => handleQueryChange(event.target.value)} placeholder="Search repositories and topics" aria-label="Search repositories" className="h-10 bg-card pl-9 pr-9" />
+									{query && <Button className="absolute right-1 top-1 size-8" variant="ghost" size="icon" aria-label="Clear search" onClick={() => handleQueryChange("")}><X className="size-4" /></Button>}
+								</div>
+								<select aria-label="Sort repositories" value={effectiveSort} onChange={(event) => handleSortChange(event.currentTarget.value)} className="h-10 min-w-0 rounded-md border border-input bg-card px-3 text-sm text-foreground shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring sm:w-40">
+									<option value="relevance">Best match</option>
+									<option value="most-stars">Most repo stars</option>
+									<option value="recently-pushed">Recently pushed</option>
+									<option value="recently-starred">Recently starred</option>
+									<option value="name">Name, A to Z</option>
+								</select>
+								<select aria-label="Filter by language" value={languageFilter} onChange={(event) => handleLanguageFilterChange(event.currentTarget.value)} className="h-10 min-w-0 rounded-md border border-input bg-card px-3 text-sm text-foreground shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring sm:w-40">
+									<option value="all">Any language</option>
+									{languageOptions.map((language) => <option key={language} value={language}>{language}</option>)}
+								</select>
+								<select aria-label="Filter by minimum repository stars" value={minimumStars} onChange={(event) => handleMinimumStarsChange(event.currentTarget.value)} className="h-10 min-w-0 rounded-md border border-input bg-card px-3 text-sm text-foreground shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring sm:w-40">
+									<option value="all">Any repo stars</option>
+									<option value="10">10+ repo stars</option>
+									<option value="100">100+ repo stars</option>
+									<option value="1000">1k+ repo stars</option>
+									<option value="10000">10k+ repo stars</option>
+								</select>
+								{hasRepositoryFilters && <Button variant="ghost" size="sm" className="col-span-2 sm:col-span-1" onClick={clearRepositoryFilters}>Clear filters</Button>}
 							</div>
 						</div>
 
